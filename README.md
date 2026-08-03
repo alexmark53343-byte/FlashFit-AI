@@ -6,6 +6,11 @@ It is an independent project created and developed by a single Italian developer
 
 The application inspects the actual mesh—including dimensions, topology, overhangs, surface orientation, fine details, separate bodies, and geometric proportions—then adapts print speed, acceleration, walls, infill, supports, cooling, adhesion, ironing, and material parameters.
 
+## Official downloads
+
+- [Windows 11 x64 — FlashFit AI 3.6.1 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Windows-11-x64.zip)
+- [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
+
 ## Current release
 
 - Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer)
