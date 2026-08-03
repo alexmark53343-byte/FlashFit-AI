@@ -9,6 +9,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 ## Current release
 
 - Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer)
+- Native Windows 11 x64 beta application
 - Flashforge Adventurer 5M with a 0.4 mm nozzle
 - Single-color and single-extruder workflow
 - STL, OBJ, and 3MF analysis
@@ -19,7 +20,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Platform availability
 
-FlashFit AI is currently available for **macOS on Apple Silicon only**. A Windows version is planned for the future.
+FlashFit AI is currently available for **macOS on Apple Silicon** and as an early **Windows 11 x64 beta**.
 
 ## Beta notice
 
@@ -33,6 +34,12 @@ ABS can warp and release fumes. Large ABS parts generally require an enclosure a
 2. Extract `FlashFit AI.app`.
 3. Move the app to the Applications folder.
 4. Open a model and verify the generated project in Flash Studio before printing.
+
+### Windows 11
+
+1. Download and extract `FlashFit-AI-Windows-11-x64.zip`.
+2. Run `FlashFit-AI-Windows-11.exe`.
+3. Windows SmartScreen may warn about an unknown publisher because this independent beta does not yet have a commercial Windows code-signing certificate. Continue only when downloading from this official repository.
 
 ## Project origin
 
