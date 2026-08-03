@@ -1,0 +1,41 @@
+# FlashFit AI
+
+FlashFit AI is an Italian project that analyzes 3D models and automatically prepares optimized slicing settings for the Flashforge Adventurer 5M.
+
+It is an independent project created and developed by a single Italian developer. FlashFit AI began with a simple frustration: advanced slicers are powerful, but finding the right combination of settings for every model and filament is still unnecessarily difficult. The project grew from that idea into a focused assistant that studies the geometry first and builds a safer, more appropriate printing strategy around it.
+
+The application inspects the actual mesh—including dimensions, topology, overhangs, surface orientation, fine details, separate bodies, and geometric proportions—then adapts print speed, acceleration, walls, infill, supports, cooling, adhesion, ironing, and material parameters.
+
+## Current release
+
+- Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer)
+- Flashforge Adventurer 5M with a 0.4 mm nozzle
+- Single-color and single-extruder workflow
+- STL, OBJ, and 3MF analysis
+- Fast, Balanced, and Perfect print strategies
+- 53 profiles covering PLA, PETG, ABS, and TPU
+- English, Italian, French, Spanish, and German interface
+- Direct Flash Studio project generation
+
+## Platform availability
+
+FlashFit AI is currently available for **macOS on Apple Silicon only**. A Windows version is planned for the future.
+
+## Beta notice
+
+This is a free beta. Always review the generated slicing preview before printing. Material behavior can vary between colors, production batches, storage conditions, and individual printers.
+
+ABS can warp and release fumes. Large ABS parts generally require an enclosure and suitable ventilation; software settings cannot replace those physical protections.
+
+## Installation
+
+1. Download `FlashFit-AI-Apple-Silicon.zip` from the latest release.
+2. Extract `FlashFit AI.app`.
+3. Move the app to the Applications folder.
+4. Open a model and verify the generated project in Flash Studio before printing.
+
+## Project origin
+
+Designed and developed in Italy by one independent developer. 🇮🇹
+
+The project is intentionally small and personal. The application and its profile engine are maintained exclusively by its original developer; this public repository distributes compiled beta releases and public documentation only.
