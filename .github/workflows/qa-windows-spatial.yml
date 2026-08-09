@@ -1,0 +1,120 @@
+name: QA Windows Spatial Preview
+
+on:
+  push:
+    branches: [qa/spatial-apple-preview]
+    paths-ignore:
+      - 'artifacts/**'
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Test and build the native Windows preview
+        shell: pwsh
+        run: |
+          go test ./appnative ./shared
+          if ($LASTEXITCODE -ne 0) { throw "Go tests failed." }
+          New-Item -ItemType Directory -Force -Path preview | Out-Null
+          go build -buildvcs=false -trimpath -ldflags="-s -w -H=windowsgui" -o preview/FlashFit-AI-Windows-11.exe ./appnative
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
+
+      - name: Launch the real app and capture its window
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class FlashFitCapture {
+              [StructLayout(LayoutKind.Sequential)]
+              public struct RECT {
+                  public int Left;
+                  public int Top;
+                  public int Right;
+                  public int Bottom;
+              }
+
+              [DllImport("user32.dll")]
+              public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+              [DllImport("user32.dll")]
+              public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
+
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(IntPtr hWnd, int command);
+
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
+          $exe = Resolve-Path "preview/FlashFit-AI-Windows-11.exe"
+          $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru
+          $deadline = (Get-Date).AddSeconds(75)
+          do {
+              Start-Sleep -Milliseconds 500
+              $process.Refresh()
+          } while ($process.MainWindowHandle -eq [IntPtr]::Zero -and -not $process.HasExited -and (Get-Date) -lt $deadline)
+
+          if ($process.HasExited) { throw "FlashFit exited before its main window appeared." }
+          if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw "FlashFit main window was not found." }
+
+          $window = $process.MainWindowHandle
+          [FlashFitCapture]::ShowWindow($window, 9) | Out-Null
+          [FlashFitCapture]::SetForegroundWindow($window) | Out-Null
+          Start-Sleep -Seconds 12
+
+          $rect = [FlashFitCapture+RECT]::new()
+          if (-not [FlashFitCapture]::GetWindowRect($window, [ref]$rect)) { throw "Could not read the FlashFit window bounds." }
+          $width = $rect.Right - $rect.Left
+          $height = $rect.Bottom - $rect.Top
+          if ($width -lt 400 -or $height -lt 300) { throw "Invalid window bounds: ${width}x${height}." }
+
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $output = Join-Path $PWD "artifacts/FlashFit-AI-Spatial-Windows.png"
+          $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $hdc = $graphics.GetHdc()
+          try {
+              $captured = [FlashFitCapture]::PrintWindow($window, $hdc, 2)
+          } finally {
+              $graphics.ReleaseHdc($hdc)
+          }
+          if (-not $captured) {
+              $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
+          }
+          $bitmap.Save($output, [System.Drawing.Imaging.ImageFormat]::Png)
+          $graphics.Dispose()
+          $bitmap.Dispose()
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          Get-Item $output | Format-List FullName, Length
+
+      - name: Upload the real Windows screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: flashfit-windows-spatial-screenshot
+          path: artifacts/FlashFit-AI-Spatial-Windows.png
+          if-no-files-found: error
+
+      - name: Return the screenshot to the QA branch
+        shell: pwsh
+        run: |
+          git config user.name "flashfit-qa-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add artifacts/FlashFit-AI-Spatial-Windows.png
+          git commit -m "QA: capture real Windows spatial UI"
+          git push
