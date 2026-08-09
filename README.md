@@ -8,12 +8,13 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Official downloads
 
-- [Windows 11 x64 — FlashFit AI 4.0 Spatial Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.0-spatial-beta/FlashFit-AI-Windows-11-x64.zip)
+- [Windows 11 x64 — FlashFit AI 4.1 Spatial Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.1-spatial-beta/FlashFit-AI-Windows-11-x64.zip)
 - [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
 
 ## Current release
 
-- Native Windows 11 x64 application with a redesigned Spatial UI
+- Native Windows 11 x64 application with a professional three-plane Spatial workspace
+- Dedicated print workflow, 3D model stage and technical configuration inspector
 - Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer), unchanged at version 3.6 Beta
 - Instant full-interface language switching: English, Italian, French, Spanish, and German
 - Responsive model and slicer discovery through isolated background workers
@@ -26,7 +27,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Platform availability
 
-FlashFit AI is currently available as **Windows 11 x64 4.0 Spatial Beta** and **macOS Apple Silicon 3.6 Beta**.
+FlashFit AI is currently available as **Windows 11 x64 4.1 Spatial Beta** and **macOS Apple Silicon 3.6 Beta**.
 
 ## Beta notice
 
@@ -52,5 +53,10 @@ ABS can warp and release fumes. Large ABS parts generally require an enclosure a
 Designed and developed in Italy by one independent developer. 🇮🇹
 
 The project is intentionally small and personal. The application and its profile engine are maintained exclusively by its original developer; this public repository distributes compiled beta releases and public documentation only.
+
+## Windows 4.1 Spatial UI
+
+![FlashFit AI 4.1 Spatial UI running on Windows 11](docs/FlashFit-AI-Spatial-4.1-Windows.png)
+
 <img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 56 24" src="https://github.com/user-attachments/assets/735e2d0e-5677-4f57-b83b-8d521991f046" />
 <img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 55 55" src="https://github.com/user-attachments/assets/53450b25-8192-40c9-bb5c-7928c4536b80" />
