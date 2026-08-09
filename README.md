@@ -8,7 +8,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Official downloads
 
-- [Windows 11 x64 — FlashFit AI 4.2 Engineering Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.2-spatial-engineering-beta/FlashFit-AI-Windows-11-x64.zip)
+- [Windows 11 x64 — FlashFit AI 4.2.1 Stability Fix Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.2.1-stability-fix-beta/FlashFit-AI-Windows-11-x64.zip)
 - [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
 
 ## Current release
@@ -18,6 +18,9 @@ The application inspects the actual mesh—including dimensions, topology, overh
 - Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer), unchanged at version 3.6 Beta
 - Instant full-interface language switching: English, Italian, French, Spanish, and German
 - Responsive model and slicer discovery through isolated background workers
+- Persistent GDI backbuffers, bounded resize caches, and idle-aware minimal animation to prevent Windows UI stalls
+- Automated one-second responsiveness and GDI-lifetime stress test for Windows release candidates
+- Embedded Windows icon, DPI-aware manifest, and Explorer version metadata
 - Flashforge Adventurer 5M with a 0.4 mm nozzle
 - Single-color and single-extruder workflow
 - STL, OBJ, and 3MF analysis
@@ -28,7 +31,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Platform availability
 
-FlashFit AI is currently available as **Windows 11 x64 4.2 Engineering Beta** and **macOS Apple Silicon 3.6 Beta**.
+FlashFit AI is currently available as **Windows 11 x64 4.2.1 Stability Fix Beta** and **macOS Apple Silicon 3.6 Beta**.
 
 ## Beta notice
 
@@ -47,7 +50,7 @@ ABS can warp and release fumes. Large ABS parts generally require an enclosure a
 
 1. Download and extract `FlashFit-AI-Windows-11-x64.zip`.
 2. Run `FlashFit-AI-Windows-11.exe`.
-3. Windows SmartScreen may warn about an unknown publisher because this independent beta does not yet have a commercial Windows code-signing certificate. Continue only when downloading from this official repository.
+3. This test beta is not yet Authenticode-signed, so Windows SmartScreen may warn about an unknown publisher. Continue only when downloading from this official repository and compare the executable against the included `SHA256SUMS.txt`.
 
 ## Project origin
 
