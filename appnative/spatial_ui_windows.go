@@ -19,6 +19,9 @@ const (
 	WM_GETMINMAXINFO = 0x0024
 	WM_SETFOCUS      = 0x0007
 	WM_TIMER         = 0x0113
+	WM_ENTERSIZEMOVE = 0x0231
+	WM_EXITSIZEMOVE  = 0x0232
+	SIZE_MINIMIZED   = 1
 
 	TRANSPARENT = 1
 	PS_SOLID    = 0
@@ -58,6 +61,11 @@ const (
 	idFilamentApply    = 4003
 	idFilamentClose    = 4004
 	idSpatialAnimation = 5101
+
+	// The motion is intentionally restrained. A 30 fps full-window GDI repaint
+	// offered no visible benefit for a two-pixel float but could monopolize the
+	// UI thread and trigger Windows' "not responding" watchdog.
+	spatialAnimationInterval = 100
 )
 
 type paintStruct struct {
@@ -97,23 +105,27 @@ var (
 	hAppIcon                                                                             uintptr
 	hFilamentDialog, hFilamentSearchLabel, hFilamentApply, hFilamentClose                uintptr
 	spatialAnimationTick                                                                 uint32
+	spatialResizing                                                                      bool
+	spatialViewportWidth, spatialViewportHeight                                          int32
+	mainSpatialBuffer                                                                    windowBackBuffer
 )
 
 var (
-	pBeginPaint      = user32.NewProc("BeginPaint")
-	pEndPaint        = user32.NewProc("EndPaint")
-	pInvalidateRect  = user32.NewProc("InvalidateRect")
-	pDrawText        = user32.NewProc("DrawTextW")
-	pFillRect        = user32.NewProc("FillRect")
-	pGetCursorPos    = user32.NewProc("GetCursorPos")
-	pCreatePopupMenu = user32.NewProc("CreatePopupMenu")
-	pAppendMenu      = user32.NewProc("AppendMenuW")
-	pTrackPopupMenu  = user32.NewProc("TrackPopupMenu")
-	pDestroyMenu     = user32.NewProc("DestroyMenu")
-	pSetFocus        = user32.NewProc("SetFocus")
-	pDrawIconEx      = user32.NewProc("DrawIconEx")
-	pSetTimer        = user32.NewProc("SetTimer")
-	pKillTimer       = user32.NewProc("KillTimer")
+	pBeginPaint          = user32.NewProc("BeginPaint")
+	pEndPaint            = user32.NewProc("EndPaint")
+	pInvalidateRect      = user32.NewProc("InvalidateRect")
+	pDrawText            = user32.NewProc("DrawTextW")
+	pFillRect            = user32.NewProc("FillRect")
+	pGetCursorPos        = user32.NewProc("GetCursorPos")
+	pCreatePopupMenu     = user32.NewProc("CreatePopupMenu")
+	pAppendMenu          = user32.NewProc("AppendMenuW")
+	pTrackPopupMenu      = user32.NewProc("TrackPopupMenu")
+	pDestroyMenu         = user32.NewProc("DestroyMenu")
+	pSetFocus            = user32.NewProc("SetFocus")
+	pDrawIconEx          = user32.NewProc("DrawIconEx")
+	pSetTimer            = user32.NewProc("SetTimer")
+	pKillTimer           = user32.NewProc("KillTimer")
+	pGetForegroundWindow = user32.NewProc("GetForegroundWindow")
 
 	pCreateSolidBrush       = gdi32.NewProc("CreateSolidBrush")
 	pCreatePen              = gdi32.NewProc("CreatePen")
@@ -178,14 +190,12 @@ func initSpatialUI(hwnd uintptr) {
 	pDwmSetWindowAttr.Call(hwnd, 36, uintptr(unsafe.Pointer(&captionText)), unsafe.Sizeof(captionText))
 	pDwmSetWindowAttr.Call(hwnd, 34, uintptr(unsafe.Pointer(&border)), unsafe.Sizeof(border))
 	pDwmSetWindowAttr.Call(hwnd, 38, uintptr(unsafe.Pointer(&backdrop)), unsafe.Sizeof(backdrop))
-	// 30 fps is enough for restrained micro-motion and keeps CPU use minimal.
-	pSetTimer.Call(hwnd, idSpatialAnimation, 33, 0)
+	startSpatialAnimation(hwnd)
 }
 
 func cleanupSpatialUI() {
-	if mainHwnd != 0 {
-		pKillTimer.Call(mainHwnd, idSpatialAnimation)
-	}
+	stopSpatialAnimation(mainHwnd)
+	mainSpatialBuffer.reset()
 	cleanupSpatialBenchyAsset()
 	cleanupSpatialMaterialSystem()
 	for _, h := range []uintptr{hFontLogo, hFontTitle, hFontHeading, hFontBody, hFontSmall, hFontButton, hFontNumber} {
@@ -193,6 +203,30 @@ func cleanupSpatialUI() {
 			pDeleteObject.Call(h)
 		}
 	}
+}
+
+func startSpatialAnimation(hwnd uintptr) {
+	if hwnd != 0 {
+		pSetTimer.Call(hwnd, idSpatialAnimation, spatialAnimationInterval, 0)
+	}
+}
+
+func stopSpatialAnimation(hwnd uintptr) {
+	if hwnd != 0 {
+		pKillTimer.Call(hwnd, idSpatialAnimation)
+	}
+}
+
+func spatialAnimationActive(hwnd uintptr) bool {
+	if hwnd == 0 || spatialResizing || hTexturePicker != 0 {
+		return false
+	}
+	iconic, _, _ := pIsIconic.Call(hwnd)
+	if iconic != 0 {
+		return false
+	}
+	foreground, _, _ := pGetForegroundWindow.Call()
+	return foreground == hwnd
 }
 
 func setSpatialTitle() {
@@ -672,25 +706,29 @@ func paintSpatialUI(hwnd uintptr) {
 	if w <= 0 || h <= 0 {
 		return
 	}
-
-	bufferDC, _, _ := pCreateCompatibleDC.Call(hdc)
-	bufferBitmap, _, _ := pCreateCompatibleBitmap.Call(hdc, uintptr(w), uintptr(h))
-	if bufferDC == 0 || bufferBitmap == 0 {
-		if bufferDC != 0 {
-			pDeleteDC.Call(bufferDC)
-		}
-		if bufferBitmap != 0 {
-			pDeleteObject.Call(bufferBitmap)
-		}
+	if spatialResizing {
+		drawSpatialResizePlaceholder(hdc, client)
+		return
+	}
+	if spatialViewportWidth != 0 && (spatialViewportWidth != w || spatialViewportHeight != h) {
+		// Cached materials are keyed by geometry. Drop the old viewport in one
+		// controlled operation so resize/maximize cannot grow GDI memory forever.
+		cleanupSpatialMaterialSystem()
+	}
+	spatialViewportWidth, spatialViewportHeight = w, h
+	if !mainSpatialBuffer.ensure(hdc, w, h) {
 		drawSpatialScene(hdc, client)
 		return
 	}
-	oldBitmap, _, _ := pSelectObject.Call(bufferDC, bufferBitmap)
-	drawSpatialScene(bufferDC, client)
-	pBitBlt.Call(hdc, 0, 0, uintptr(w), uintptr(h), bufferDC, 0, 0, SRCCOPY)
-	pSelectObject.Call(bufferDC, oldBitmap)
-	pDeleteObject.Call(bufferBitmap)
-	pDeleteDC.Call(bufferDC)
+	drawSpatialScene(mainSpatialBuffer.dc, client)
+	pBitBlt.Call(hdc, 0, 0, uintptr(w), uintptr(h), mainSpatialBuffer.dc, 0, 0, SRCCOPY)
+}
+
+func drawSpatialResizePlaceholder(hdc uintptr, client rect) {
+	background := brush(rgb(247, 249, 253))
+	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
+	pDeleteObject.Call(background)
+	text(hdc, "FlashFit AI", client, hFontLogo, rgb(36, 42, 57), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 }
 
 func spatialClick(x, y int32) {
