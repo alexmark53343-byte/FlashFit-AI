@@ -2,6 +2,11 @@ name: Capture Windows UI
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release or draft tag containing the Windows preview
+        required: true
+        default: v4.0-spatial-beta
 
 permissions:
   contents: read
@@ -14,9 +19,10 @@ jobs:
     steps:
       - name: Download the published Windows build
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $url = "https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.0-spatial-beta/FlashFit-AI-Windows-11-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile FlashFit-Windows.zip
+          gh release download "${{ inputs.release_tag }}" --repo "${{ github.repository }}" --pattern "FlashFit-AI-Windows-11-x64.zip" --output FlashFit-Windows.zip
           Expand-Archive -Path FlashFit-Windows.zip -DestinationPath FlashFit-Windows
 
       - name: Launch the real app and capture its window
