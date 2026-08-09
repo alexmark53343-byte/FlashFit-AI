@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -261,6 +262,104 @@ func TestNonPerfectCannotAccidentallyEnableTexture(t *testing.T) {
 	}
 	if r.Texture != "none" || r.Process["fuzzy_skin"] != "none" || r.Process["ironing_type"] != "no ironing" {
 		t.Fatalf("texture leaked into balanced: %+v", r)
+	}
+}
+
+func TestDurationAdaptiveModesAvoidPointlessSpeedups(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "cube.stl")
+	writeCubeSTL(t, p)
+	short, _ := AnalyzeSTL(p)
+	filament := sampleFilament()
+
+	check := func(name string, analysis ModelAnalysis, wantClass string, fastMin, fastMax, perfectMax float64) {
+		t.Helper()
+		fast, err := RecommendWithTexture(analysis, filament, "low", "")
+		if err != nil {
+			t.Fatalf("%s fast: %v", name, err)
+		}
+		balanced, _ := RecommendWithTexture(analysis, filament, "balanced", "")
+		perfect, _ := RecommendWithTexture(analysis, filament, "perfect", "satin")
+		if fast.DurationClass != wantClass || balanced.DurationClass != wantClass || perfect.DurationClass != wantClass {
+			t.Fatalf("%s classi errate: %s/%s/%s", name, fast.DurationClass, balanced.DurationClass, perfect.DurationClass)
+		}
+		if fast.EstimatedRelativeTime < fastMin || fast.EstimatedRelativeTime > fastMax {
+			t.Fatalf("%s fast ratio eccessivo: %.2f", name, fast.EstimatedRelativeTime)
+		}
+		if perfect.EstimatedRelativeTime <= 1 || perfect.EstimatedRelativeTime > perfectMax {
+			t.Fatalf("%s perfect ratio eccessivo: %.2f", name, perfect.EstimatedRelativeTime)
+		}
+		if !(fast.EstimatedModeMinutes < balanced.EstimatedModeMinutes && balanced.EstimatedModeMinutes < perfect.EstimatedModeMinutes) {
+			t.Fatalf("%s ordine tempi errato: %.1f / %.1f / %.1f", name, fast.EstimatedModeMinutes, balanced.EstimatedModeMinutes, perfect.EstimatedModeMinutes)
+		}
+	}
+
+	check("short", short, "short", 0.94, 0.98, 1.55)
+	if r, _ := Recommend(short, filament, "low"); r.CriticalValues["layer_height"] != 0.20 {
+		t.Fatalf("stampa breve degradata inutilmente: layer %.2f", r.CriticalValues["layer_height"])
+	}
+
+	medium := short
+	medium.Extents, medium.SurfaceArea, medium.Volume = [3]float64{35, 35, 35}, 7350, 42875
+	medium.Category, medium.ThinOrTall, medium.SupportSuggested, medium.BrimSuggested = "Oggetto tecnico/decorativo", false, false, false
+	check("medium", medium, "medium", 0.82, 0.86, 1.65)
+
+	long := short
+	long.Extents, long.SurfaceArea, long.Volume = [3]float64{60, 60, 60}, 21600, 216000
+	long.Category, long.ThinOrTall, long.SupportSuggested, long.BrimSuggested = "Oggetto grande", false, false, false
+	check("long", long, "long", 0.70, 0.74, 1.58)
+}
+
+func TestAllGeneratedProfilesRespectOfficialAD5MLimits(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "cube.stl")
+	writeCubeSTL(t, p)
+	a, _ := AnalyzeSTL(p)
+	filaments, err := LoadBuiltinFilaments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(value any) float64 {
+		t.Helper()
+		n, parseErr := strconv.ParseFloat(strings.TrimSuffix(fmt.Sprint(value), "%"), 64)
+		if parseErr != nil {
+			t.Fatalf("valore non numerico: %v", value)
+		}
+		return n
+	}
+	printSpeeds := []string{"outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed", "top_surface_speed", "small_perimeter_speed", "gap_infill_speed", "bridge_speed", "support_speed", "support_interface_speed", "initial_layer_speed", "initial_layer_infill_speed", "ironing_speed"}
+	accelerations := []string{"outer_wall_acceleration", "inner_wall_acceleration", "sparse_infill_acceleration", "internal_solid_infill_acceleration", "top_surface_acceleration", "bridge_acceleration", "initial_layer_acceleration", "travel_acceleration"}
+	medium, long := a, a
+	medium.Extents, medium.SurfaceArea, medium.Volume = [3]float64{35, 35, 35}, 7350, 42875
+	medium.Category, medium.ThinOrTall, medium.SupportSuggested, medium.BrimSuggested = "Oggetto tecnico/decorativo", false, false, false
+	long.Extents, long.SurfaceArea, long.Volume = [3]float64{60, 60, 60}, 21600, 216000
+	long.Category, long.ThinOrTall, long.SupportSuggested, long.BrimSuggested = "Oggetto grande", false, false, false
+	for _, analysis := range []ModelAnalysis{a, medium, long} {
+		for _, filament := range filaments {
+			for _, quality := range []string{"low", "balanced", "perfect"} {
+				r, recErr := Recommend(analysis, filament, quality)
+				if recErr != nil {
+					t.Fatalf("%s/%s: %v", filament.Product, quality, recErr)
+				}
+				layer := parse(r.Process["layer_height"])
+				if layer < 0.10 || layer > 0.40 {
+					t.Fatalf("layer fuori manuale AD5M: %.2f", layer)
+				}
+				for _, key := range printSpeeds {
+					if speed := parse(r.Process[key]); speed < 0 || speed > 300 {
+						t.Fatalf("%s %s velocità fuori limite: %s=%.0f", filament.Product, quality, key, speed)
+					}
+				}
+				if travel := parse(r.Process["travel_speed"]); travel > 600 {
+					t.Fatalf("travel fuori limite: %.0f", travel)
+				}
+				for _, key := range accelerations {
+					if accel := parse(r.Process[key]); accel < 0 || accel > 20000 {
+						t.Fatalf("%s accelerazione fuori limite: %.0f", key, accel)
+					}
+				}
+			}
+		}
 	}
 }
 func TestOpenMeshRejected(t *testing.T) {

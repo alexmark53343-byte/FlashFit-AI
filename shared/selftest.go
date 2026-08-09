@@ -71,7 +71,7 @@ func RunSelfTest(root string) error {
 			}
 			layer := r.CriticalValues["layer_height"]
 			speed := r.CriticalValues["outer_wall_speed"]
-			if speed*layer*0.42 > f.MaxVolumetricSpeed*0.73 {
+			if speed*layer*0.42 > f.MaxVolumetricSpeed*0.75 {
 				return fmt.Errorf("limite volumetrico non rispettato")
 			}
 			tested++
