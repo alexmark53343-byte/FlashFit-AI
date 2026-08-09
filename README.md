@@ -8,24 +8,25 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Official downloads
 
-- [Windows 11 x64 — FlashFit AI 3.6.1 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Windows-11-x64.zip)
+- [Windows 11 x64 — FlashFit AI 4.0 Spatial Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.0-spatial-beta/FlashFit-AI-Windows-11-x64.zip)
 - [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
 
 ## Current release
 
-- Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer)
-- Native Windows 11 x64 beta application
+- Native Windows 11 x64 application with a redesigned Spatial UI
+- Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer), unchanged at version 3.6 Beta
+- Instant full-interface language switching: English, Italian, French, Spanish, and German
+- Responsive model and slicer discovery through isolated background workers
 - Flashforge Adventurer 5M with a 0.4 mm nozzle
 - Single-color and single-extruder workflow
 - STL, OBJ, and 3MF analysis
 - Fast, Balanced, and Perfect print strategies
 - 53 profiles covering PLA, PETG, ABS, and TPU
-- English, Italian, French, Spanish, and German interface
 - Direct Flash Studio project generation
 
 ## Platform availability
 
-FlashFit AI is currently available for **macOS on Apple Silicon** and as an early **Windows 11 x64 beta**.
+FlashFit AI is currently available as **Windows 11 x64 4.0 Spatial Beta** and **macOS Apple Silicon 3.6 Beta**.
 
 ## Beta notice
 
@@ -35,7 +36,7 @@ ABS can warp and release fumes. Large ABS parts generally require an enclosure a
 
 ## Installation
 
-1. Download `FlashFit-AI-Apple-Silicon.zip` from the latest release.
+1. Download `FlashFit-AI-Apple-Silicon.zip` using the macOS link above.
 2. Extract `FlashFit AI.app`.
 3. Move the app to the Applications folder.
 4. Open a model and verify the generated project in Flash Studio before printing.
