@@ -196,6 +196,85 @@ func TestAllBuiltinSafeProfilesAllQualities(t *testing.T) {
 	}
 }
 
+func TestAllTwentyThreeTechnicalProfilesAreTraceable(t *testing.T) {
+	filaments, err := LoadBuiltinFilaments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filaments) != 23 {
+		t.Fatalf("catalogo sicuro inatteso: %d profili", len(filaments))
+	}
+	for _, f := range filaments {
+		if len(f.TechnicalSources) == 0 || f.Source == "" || f.Confidence == "" {
+			t.Fatalf("profilo senza provenienza tecnica: %s %s", f.Brand, f.Product)
+		}
+		if f.DryTemperature <= 0 || f.DryHours <= 0 {
+			t.Fatalf("essiccazione non documentata: %s %s", f.Brand, f.Product)
+		}
+		if f.FlowRatio != 1 || f.PressureAdvance != nil || f.MeasuredCalibration {
+			t.Fatalf("valore specifico bobina inventato: %s %s", f.Brand, f.Product)
+		}
+	}
+}
+
+func TestMeasuredSpoolCalibrationOverridesOnlyMeasuredValues(t *testing.T) {
+	filaments, err := LoadBuiltinFilaments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filaments[0]
+	temp, mvs, flow, pa := base.NozzleDefault, 13.4, 0.982, 0.027
+	calibrated, err := ApplyFilamentCalibration(base, FilamentCalibration{
+		Brand: base.Brand, Product: base.Product, Material: base.Material, Variant: base.Variant,
+		NozzleTemperature: &temp, MaxVolumetricSpeed: &mvs, FlowRatio: &flow, PressureAdvance: &pa,
+		Method: "Orca: temperatura > MVS > PA > flow", MeasuredAt: "2026-08-09",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !calibrated.MeasuredCalibration || calibrated.MaxVolumetricSpeed != mvs || calibrated.FlowRatio != flow || calibrated.PressureAdvance == nil || *calibrated.PressureAdvance != pa {
+		t.Fatalf("calibrazione non applicata: %+v", calibrated)
+	}
+	bad := 40.0
+	if _, err := ApplyFilamentCalibration(base, FilamentCalibration{Brand: base.Brand, Product: base.Product, Material: base.Material, Variant: base.Variant, MaxVolumetricSpeed: &bad, Method: "test"}); err == nil {
+		t.Fatal("MVS fisicamente non sicura accettata")
+	}
+}
+
+func TestTDSLinearSpeedAndCoolingLimitsReachSlicerProfile(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "cube.stl")
+	writeCubeSTL(t, p)
+	a, _ := AnalyzeSTL(p)
+	filaments, _ := LoadBuiltinFilaments()
+	var overturePLA, polymakerPETG Filament
+	for _, f := range filaments {
+		if f.Brand == "Overture" && f.Product == "PLA" {
+			overturePLA = f
+		}
+		if f.Brand == "Polymaker" && f.Product == "PolyLite PETG" {
+			polymakerPETG = f
+		}
+	}
+	fast, err := Recommend(a, overturePLA, "low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed"} {
+		value, parseErr := strconv.ParseFloat(fmt.Sprint(fast.Process[key]), 64)
+		if parseErr != nil || value > 70 {
+			t.Fatalf("tetto TDS non rispettato: %s=%v", key, fast.Process[key])
+		}
+	}
+	petg, err := Recommend(a, polymakerPETG, "perfect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if petg.Filament["fan_max_speed"] != "20" || petg.Filament["close_fan_the_first_x_layers"] != "3" || petg.Filament["full_fan_speed_layer"] != "5" {
+		t.Fatalf("raffreddamento PETG TDS perso: %+v", petg.Filament)
+	}
+}
+
 func TestPerfectPremiumTexturesWriteRealSlicerSettings(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "cube.stl")

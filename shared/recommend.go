@@ -74,9 +74,20 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		safety -= 0.05
 	}
 	safeMVS := f.MaxVolumetricSpeed * safety
+	linearLimit := 300.0
+	if f.RecommendedSpeedMax > 0 {
+		linearLimit = math.Min(linearLimit, f.RecommendedSpeedMax)
+	}
+	if isSilk {
+		// Both Flashforge and Bambu document loss of gloss at high speed.
+		linearLimit = math.Min(linearLimit, 80)
+		if quality == "perfect" {
+			linearLimit = math.Min(linearLimit, 60)
+		}
+	}
 	capSpeed := func(request, width float64) float64 {
 		cap := safeMVS / (p.Layer * width)
-		return math.Max(10, math.Min(request, math.Floor(cap)))
+		return math.Max(10, math.Min(request, math.Min(linearLimit, math.Floor(cap))))
 	}
 	outer := capSpeed(p.Outer, 0.42)
 	inner := capSpeed(p.Inner, 0.45)
@@ -102,6 +113,11 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	}
 
 	nozzle, bed := f.NozzleDefault, f.BedDefault
+	// High-flow modes need a small, documented temperature margin. Never exceed
+	// the TDS range and do not heat short prints just to save a negligible time.
+	if quality == "low" && durationClass != "short" {
+		nozzle = math.Min(f.NozzleMax, nozzle+5)
+	}
 	flow := f.FlowRatio
 	if flow == 0 {
 		flow = 1
@@ -193,12 +209,21 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		}
 	}
 
+	closedFanLayers, fullFanLayer, slowLayerTime, minPrintSpeed := 1, 3, 8, 15
+	if isPETG {
+		closedFanLayers, fullFanLayer, slowLayerTime = 3, 5, 10
+	}
+	if isSilk {
+		minPrintSpeed = 12
+	}
 	fil := map[string]any{
 		"filament_density": fmt2(f.Density), "filament_flow_ratio": fmt3(flow), "filament_max_volumetric_speed": fmt2(safeMVS),
 		"nozzle_temperature": fmt0(nozzle), "nozzle_temperature_initial_layer": fmt0(math.Min(f.NozzleMax, nozzle+5)),
 		"hot_plate_temp": fmt0(bed), "hot_plate_temp_initial_layer": fmt0(math.Min(f.BedMax, bed+5)),
 		"textured_plate_temp": fmt0(bed), "textured_plate_temp_initial_layer": fmt0(math.Min(f.BedMax, bed+5)),
 		"fan_min_speed": fmt0(f.FanMin), "fan_max_speed": fmt0(f.FanMax),
+		"close_fan_the_first_x_layers": fmt.Sprintf("%d", closedFanLayers), "full_fan_speed_layer": fmt.Sprintf("%d", fullFanLayer),
+		"slow_down_for_layer_cooling": "1", "slow_down_layer_time": fmt.Sprintf("%d", slowLayerTime), "min_print_speed": fmt.Sprintf("%d", minPrintSpeed),
 	}
 	if f.PressureAdvance != nil {
 		fil["enable_pressure_advance"] = "1"
@@ -213,6 +238,12 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		fmt.Sprintf("%d pareti, guscio superiore minimo %.1f mm e infill gyroid al %d%% per una resistenza equilibrata.", p.Walls, topThickness, p.InfillPct),
 		"Arachne, parete precisa e cuciture interne sfalsate proteggono dettagli e continuità dei gusci.",
 		durationReason(durationClass, estimatedBalancedMinutes, relativeTime),
+	}
+	if f.RecommendedSpeedMax > 0 {
+		reasons = append(reasons, fmt.Sprintf("Velocità lineare limitata a %.0f mm/s come tetto della scheda tecnica; la MVS resta il limite dominante.", linearLimit))
+	}
+	if f.DryTemperature > 0 && f.DryHours > 0 {
+		reasons = append(reasons, fmt.Sprintf("Scheda tecnica: se la bobina ha assorbito umidità, essiccare a %.0f °C per %.0f h prima della calibrazione.", f.DryTemperature, f.DryHours))
 	}
 	if quality == "perfect" {
 		reasons = append(reasons, fmt.Sprintf("Finitura Ultra Premium %s applicata come percorso reale dello slicer.", textureLabel))
