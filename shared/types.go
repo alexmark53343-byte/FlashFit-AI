@@ -52,15 +52,18 @@ type ModelAnalysis struct {
 }
 
 type Recommendation struct {
-	Quality               string             `json:"quality"`
-	QualityLabel          string             `json:"quality_label"`
-	Texture               string             `json:"texture"`
-	TextureLabel          string             `json:"texture_label"`
-	Process               map[string]any     `json:"process"`
-	Filament              map[string]any     `json:"filament"`
-	Reasons               []string           `json:"reasons"`
-	Warnings              []string           `json:"warnings"`
-	EstimatedRelativeTime float64            `json:"estimated_relative_time"`
-	CriticalValues        map[string]float64 `json:"critical_values"`
-	CriticalSettings      map[string]string  `json:"critical_settings"`
+	Quality                  string             `json:"quality"`
+	QualityLabel             string             `json:"quality_label"`
+	Texture                  string             `json:"texture"`
+	TextureLabel             string             `json:"texture_label"`
+	Process                  map[string]any     `json:"process"`
+	Filament                 map[string]any     `json:"filament"`
+	Reasons                  []string           `json:"reasons"`
+	Warnings                 []string           `json:"warnings"`
+	EstimatedRelativeTime    float64            `json:"estimated_relative_time"`
+	EstimatedBalancedMinutes float64            `json:"estimated_balanced_minutes"`
+	EstimatedModeMinutes     float64            `json:"estimated_mode_minutes"`
+	DurationClass            string             `json:"duration_class"`
+	CriticalValues           map[string]float64 `json:"critical_values"`
+	CriticalSettings         map[string]string  `json:"critical_settings"`
 }

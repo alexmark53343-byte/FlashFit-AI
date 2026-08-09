@@ -22,7 +22,7 @@ type qualityPreset struct {
 var presets = map[string]qualityPreset{
 	"low":      {Label: "Veloce", Layer: 0.24, Outer: 72, Inner: 108, Infill: 138, Top: 56, Small: 30, Bridge: 28, OuterAccel: 2100, InnerAccel: 3900, TopAccel: 1600, Walls: 3, TopLayers: 4, BottomLayers: 4, InfillPct: 12, Relative: 0.68},
 	"balanced": {Label: "Bilanciata", Layer: 0.20, Outer: 55, Inner: 82, Infill: 105, Top: 45, Small: 27, Bridge: 26, OuterAccel: 1500, InnerAccel: 3000, TopAccel: 1200, Walls: 3, TopLayers: 5, BottomLayers: 4, InfillPct: 15, Relative: 1.0},
-	"perfect":  {Label: "Perfetta", Layer: 0.12, Outer: 34, Inner: 52, Infill: 68, Top: 28, Small: 18, Bridge: 20, OuterAccel: 850, InnerAccel: 1700, TopAccel: 700, Walls: 4, TopLayers: 8, BottomLayers: 6, InfillPct: 20, Relative: 1.82},
+	"perfect":  {Label: "Perfetta", Layer: 0.14, Outer: 34, Inner: 52, Infill: 68, Top: 28, Small: 18, Bridge: 20, OuterAccel: 850, InnerAccel: 1700, TopAccel: 700, Walls: 4, TopLayers: 7, BottomLayers: 6, InfillPct: 18, Relative: 1.52},
 }
 
 type texturePreset struct {
@@ -58,6 +58,9 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	m := strings.ToUpper(strings.TrimSpace(f.Material))
 	isPETG := strings.HasPrefix(m, "PETG")
 	isSilk := strings.Contains(strings.ToUpper(f.Product+" "+f.Variant), "SILK")
+	estimatedBalancedMinutes := EstimateBalancedMinutes(a, f)
+	durationClass := durationClassForMinutes(estimatedBalancedMinutes)
+	p = adaptPresetForDuration(p, quality, durationClass, a)
 
 	// A producer MVS is an upper bound, not a quality target. Every mode keeps a
 	// filament-aware margin and all requested speeds are volume-capped below it.
@@ -151,6 +154,7 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	}
 
 	textureID, textureLabel := "none", "Standard"
+	relativeTime := p.Relative
 	if quality == "perfect" {
 		textureID = strings.ToLower(strings.TrimSpace(texture))
 		if textureID == "" {
@@ -181,6 +185,11 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 			}
 			process["ironing_flow"] = fmt.Sprintf("%d%%", flowPct)
 			process["ironing_speed"] = fmt0(ironingSpeed)
+			relativeTime += 0.10
+		} else if textureID == "carbon" {
+			relativeTime += 0.05
+		} else {
+			relativeTime += 0.03
 		}
 	}
 
@@ -203,6 +212,7 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		fmt.Sprintf("Portata limitata al %.0f%% della MVS dichiarata: %.1f su %.1f mm³/s.", safety*100, safeMVS, f.MaxVolumetricSpeed),
 		fmt.Sprintf("%d pareti, guscio superiore minimo %.1f mm e infill gyroid al %d%% per una resistenza equilibrata.", p.Walls, topThickness, p.InfillPct),
 		"Arachne, parete precisa e cuciture interne sfalsate proteggono dettagli e continuità dei gusci.",
+		durationReason(durationClass, estimatedBalancedMinutes, relativeTime),
 	}
 	if quality == "perfect" {
 		reasons = append(reasons, fmt.Sprintf("Finitura Ultra Premium %s applicata come percorso reale dello slicer.", textureLabel))
@@ -225,8 +235,100 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	return Recommendation{
 		Quality: quality, QualityLabel: p.Label, Texture: textureID, TextureLabel: textureLabel,
 		Process: process, Filament: fil, Reasons: reasons, Warnings: a.Warnings,
-		EstimatedRelativeTime: p.Relative, CriticalValues: critical, CriticalSettings: criticalSettings,
+		EstimatedRelativeTime: relativeTime, EstimatedBalancedMinutes: estimatedBalancedMinutes,
+		EstimatedModeMinutes: estimatedBalancedMinutes * relativeTime, DurationClass: durationClass,
+		CriticalValues: critical, CriticalSettings: criticalSettings,
 	}, nil
+}
+
+// EstimateBalancedMinutes is a conservative geometry estimate used only to
+// decide how far the quality modes should diverge. Flash Studio remains the
+// authority for the final sliced time shown to the user.
+func EstimateBalancedMinutes(a ModelAnalysis, f Filament) float64 {
+	area, volume := a.SurfaceArea, a.Volume
+	if area <= 0 {
+		x, y, z := a.Extents[0], a.Extents[1], a.Extents[2]
+		area = 2 * (x*y + x*z + y*z)
+	}
+	if volume <= 0 {
+		volume = a.Extents[0] * a.Extents[1] * a.Extents[2]
+	}
+	// Approximate material in walls/top-bottom plus 15% gyroid infill.
+	extrudedMM3 := area*1.05 + volume*0.15
+	effectiveFlow := math.Min(5.2, f.MaxVolumetricSpeed*0.36)
+	effectiveFlow = math.Max(2.4, effectiveFlow)
+	minutes := extrudedMM3/effectiveFlow/60*1.35 + math.Max(0, a.Extents[2])/0.20*0.025 + 4
+	if a.SupportSuggested {
+		minutes *= 1.12
+	}
+	if a.BrimSuggested {
+		minutes += 2
+	}
+	return math.Max(8, minutes)
+}
+
+func durationClassForMinutes(minutes float64) string {
+	switch {
+	case minutes <= 60:
+		return "short"
+	case minutes <= 180:
+		return "medium"
+	default:
+		return "long"
+	}
+}
+
+func adaptPresetForDuration(p qualityPreset, quality, durationClass string, a ModelAnalysis) qualityPreset {
+	switch quality {
+	case "low":
+		switch durationClass {
+		case "short":
+			// Saving a few minutes is not worth giving up layer quality.
+			p.Layer, p.Outer, p.Inner, p.Infill, p.Top = 0.20, 60, 88, 112, 48
+			p.Small, p.Bridge = 27, 26
+			p.OuterAccel, p.InnerAccel, p.TopAccel = 1650, 3200, 1300
+			p.Walls, p.TopLayers, p.BottomLayers, p.InfillPct = 3, 5, 4, 15
+			p.Relative = 0.96
+		case "medium":
+			p.Layer, p.Outer, p.Inner, p.Infill, p.Top = 0.22, 65, 96, 122, 51
+			p.Small, p.Bridge = 29, 27
+			p.OuterAccel, p.InnerAccel, p.TopAccel = 1850, 3550, 1450
+			p.Walls, p.TopLayers, p.BottomLayers, p.InfillPct = 3, 4, 4, 14
+			p.Relative = 0.84
+		default:
+			p.Relative = 0.72
+		}
+	case "perfect":
+		switch durationClass {
+		case "short":
+			p.Layer, p.TopLayers, p.InfillPct, p.Relative = 0.14, 7, 18, 1.38
+		case "medium":
+			p.Layer, p.TopLayers, p.InfillPct, p.Relative = 0.14, 7, 18, 1.48
+		default:
+			// 0.16 keeps a multi-hour print premium without doubling its duration.
+			p.Layer, p.Outer, p.Inner, p.Infill, p.Top = 0.16, 38, 58, 76, 32
+			p.Small, p.Bridge = 20, 21
+			p.TopLayers, p.BottomLayers, p.InfillPct, p.Relative = 7, 6, 18, 1.42
+		}
+		if durationClass == "short" && (a.Category == "Miniatura dettagliata" || a.Category == "Superficie complessa") {
+			p.Layer = 0.12
+			p.TopLayers = 8
+			p.Relative = math.Max(p.Relative, 1.50)
+		}
+	}
+	return p
+}
+
+func durationReason(class string, balancedMinutes, relative float64) string {
+	modeMinutes := balancedMinutes * relative
+	switch class {
+	case "short":
+		return fmt.Sprintf("Stampa breve stimata: Veloce conserva quasi tutta la qualità; riferimento %.0f min, modalità scelta circa %.0f min.", balancedMinutes, modeMinutes)
+	case "medium":
+		return fmt.Sprintf("Stampa media stimata: differenza tempo/qualità moderata; riferimento %.0f min, modalità scelta circa %.0f min.", balancedMinutes, modeMinutes)
+	default:
+		return fmt.Sprintf("Stampa lunga stimata: risparmio controllato e Perfetta limitata per evitare tempi estremi; riferimento %.0f min, modalità scelta circa %.0f min.", balancedMinutes, modeMinutes)
+	}
 }
 
 func fmt0(v float64) string { return fmt.Sprintf("%.0f", v) }
