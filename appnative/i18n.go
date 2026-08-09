@@ -159,12 +159,20 @@ var textByLanguage = map[string]map[string]string{
 }
 
 func tr(key string) string {
+	if lang, ok := premiumTextByLanguage[uiLanguage]; ok {
+		if value, ok := lang[key]; ok {
+			return value
+		}
+	}
 	if lang, ok := textByLanguage[uiLanguage]; ok {
 		if value, ok := lang[key]; ok {
 			return value
 		}
 	}
 	if value, ok := textByLanguage["en"][key]; ok {
+		return value
+	}
+	if value, ok := premiumTextByLanguage["en"][key]; ok {
 		return value
 	}
 	return key

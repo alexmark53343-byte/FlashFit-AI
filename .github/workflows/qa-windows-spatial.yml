@@ -56,6 +56,9 @@ jobs:
 
               [DllImport("user32.dll")]
               public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+              [DllImport("user32.dll")]
+              public static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
           }
           '@
 
@@ -73,7 +76,10 @@ jobs:
           $window = $process.MainWindowHandle
           [FlashFitCapture]::ShowWindow($window, 3) | Out-Null
           [FlashFitCapture]::SetForegroundWindow($window) | Out-Null
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 3
+          # WM_APP + 4 opens the real Perfect / Ultra Premium texture picker.
+          [FlashFitCapture]::PostMessage($window, 0x8004, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+          Start-Sleep -Seconds 12
 
           $rect = [FlashFitCapture+RECT]::new()
           if (-not [FlashFitCapture]::GetWindowRect($window, [ref]$rect)) { throw "Could not read the FlashFit window bounds." }
@@ -82,7 +88,7 @@ jobs:
           if ($width -lt 400 -or $height -lt 300) { throw "Invalid window bounds: ${width}x${height}." }
 
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $output = Join-Path $PWD "artifacts/FlashFit-AI-Spatial-Windows.png"
+          $output = Join-Path $PWD "artifacts/FlashFit-AI-Ultra-Premium-Windows.png"
           $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
           $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
           $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
@@ -96,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flashfit-windows-spatial-screenshot
-          path: artifacts/FlashFit-AI-Spatial-Windows.png
+          path: artifacts/FlashFit-AI-Ultra-Premium-Windows.png
           if-no-files-found: error
 
       - name: Return the screenshot to the QA branch
@@ -104,6 +110,6 @@ jobs:
         run: |
           git config user.name "flashfit-qa-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add artifacts/FlashFit-AI-Spatial-Windows.png
-          git commit -m "QA: capture real Windows spatial UI"
+          git add artifacts/FlashFit-AI-Ultra-Premium-Windows.png
+          git commit -m "QA: capture real Windows premium textures"
           git push

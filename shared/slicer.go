@@ -33,6 +33,7 @@ type ImportRequest struct {
 	Model        ModelAnalysis
 	Filament     Filament
 	Quality      string
+	Texture      string
 	SlicerExe    string
 	Machine      string
 	BaseProcess  string
@@ -238,7 +239,18 @@ func profileMentionsAD5M(m map[string]any) bool {
 }
 
 var processPatchKeys = map[string]bool{
-	"layer_height": true, "initial_layer_print_height": true, "line_width": true, "outer_wall_line_width": true, "inner_wall_line_width": true, "sparse_infill_line_width": true, "wall_loops": true, "top_shell_layers": true, "bottom_shell_layers": true, "sparse_infill_density": true, "sparse_infill_pattern": true, "enable_support": true, "support_type": true, "support_threshold_angle": true, "brim_type": true, "brim_width": true, "outer_wall_speed": true, "inner_wall_speed": true, "sparse_infill_speed": true, "top_surface_speed": true, "small_perimeter_speed": true, "bridge_speed": true, "outer_wall_acceleration": true, "inner_wall_acceleration": true, "top_surface_acceleration": true, "travel_acceleration": true, "travel_speed": true, "avoid_crossing_wall": true, "reduce_infill_retraction": true, "overhang_1_4_speed": true, "overhang_2_4_speed": true, "overhang_3_4_speed": true, "overhang_4_4_speed": true,
+	"layer_height": true, "initial_layer_print_height": true, "line_width": true, "outer_wall_line_width": true, "inner_wall_line_width": true, "sparse_infill_line_width": true,
+	"wall_loops": true, "top_shell_layers": true, "bottom_shell_layers": true, "top_shell_thickness": true, "bottom_shell_thickness": true,
+	"sparse_infill_density": true, "sparse_infill_pattern": true, "top_surface_pattern": true, "bottom_surface_pattern": true, "top_surface_density": true, "bottom_surface_density": true,
+	"wall_generator": true, "precise_outer_wall": true, "only_one_wall_top": true, "ensure_vertical_shell_thickness": true, "infill_wall_overlap": true, "top_bottom_infill_wall_overlap": true,
+	"seam_position": true, "staggered_inner_seams": true, "seam_gap": true,
+	"enable_support": true, "support_type": true, "support_threshold_angle": true, "brim_type": true, "brim_width": true,
+	"outer_wall_speed": true, "inner_wall_speed": true, "sparse_infill_speed": true, "internal_solid_infill_speed": true, "top_surface_speed": true, "small_perimeter_speed": true, "gap_infill_speed": true, "bridge_speed": true, "support_speed": true, "support_interface_speed": true,
+	"initial_layer_speed": true, "initial_layer_infill_speed": true, "ironing_speed": true,
+	"outer_wall_acceleration": true, "inner_wall_acceleration": true, "sparse_infill_acceleration": true, "internal_solid_infill_acceleration": true, "top_surface_acceleration": true, "bridge_acceleration": true, "initial_layer_acceleration": true, "travel_acceleration": true, "travel_speed": true,
+	"bridge_flow": true, "avoid_crossing_wall": true, "reduce_infill_retraction": true, "overhang_1_4_speed": true, "overhang_2_4_speed": true, "overhang_3_4_speed": true, "overhang_4_4_speed": true,
+	"ironing_type": true, "ironing_pattern": true, "ironing_flow": true, "ironing_spacing": true, "ironing_inset": true,
+	"fuzzy_skin": true, "fuzzy_skin_thickness": true, "fuzzy_skin_point_distance": true, "fuzzy_skin_first_layer": true,
 }
 var filamentPatchKeys = map[string]bool{
 	"filament_density": true, "filament_flow_ratio": true, "filament_max_volumetric_speed": true, "nozzle_temperature": true, "nozzle_temperature_initial_layer": true, "hot_plate_temp": true, "hot_plate_temp_initial_layer": true, "textured_plate_temp": true, "textured_plate_temp_initial_layer": true, "fan_min_speed": true, "fan_max_speed": true, "enable_pressure_advance": true, "pressure_advance": true,
@@ -432,7 +444,7 @@ func PatchProfiles(baseProcess, baseFilament string, rec Recommendation, f Filam
 	if e != nil {
 		return "", "", "", e
 	}
-	pname := safeProfileName("FlashFit " + rec.QualityLabel + " AD5M 0.4")
+	pname := recommendationProfileName(rec)
 	fname := safeProfileName("FlashFit " + f.Brand + " " + f.Product)
 	p["type"] = "process"
 	p["name"] = pname
@@ -463,7 +475,7 @@ func PatchProfiles(baseProcess, baseFilament string, rec Recommendation, f Filam
 	pp := filepath.Join(outDir, "flashfit_process.json")
 	ff := filepath.Join(outDir, "flashfit_filament.json")
 	ss := filepath.Join(outDir, "flashfit_summary.json")
-	summary := map[string]any{"schema_version": 5, "machine": "Flashforge Adventurer 5M", "nozzle_mm": 0.4, "base_process": baseProcess, "base_filament": baseFilament, "process_profile_name": pname, "filament_profile_name": fname, "critical_values": rec.CriticalValues, "recommendation": rec, "model_sha256": ""}
+	summary := map[string]any{"schema_version": 6, "machine": "Flashforge Adventurer 5M", "nozzle_mm": 0.4, "base_process": baseProcess, "base_filament": baseFilament, "process_profile_name": pname, "filament_profile_name": fname, "critical_values": rec.CriticalValues, "critical_settings": rec.CriticalSettings, "recommendation": rec, "model_sha256": ""}
 	if e = atomicJSON(pp, p); e != nil {
 		return "", "", "", e
 	}
@@ -506,6 +518,14 @@ func safeProfileName(s string) string {
 		s = s[:110]
 	}
 	return s
+}
+
+func recommendationProfileName(rec Recommendation) string {
+	name := "FlashFit " + rec.QualityLabel
+	if rec.Quality == "perfect" && rec.TextureLabel != "" && rec.Texture != "none" {
+		name += " - " + rec.TextureLabel
+	}
+	return safeProfileName(name + " AD5M 0.4")
 }
 func atomicJSON(path string, v any) error {
 	b, e := json.MarshalIndent(v, "", "  ")
@@ -565,7 +585,7 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 			return ImportResult{}, errors.New("il file originale è cambiato dopo l'analisi: riesegui Analizza")
 		}
 	}
-	rec, e := Recommend(req.Model, req.Filament, req.Quality)
+	rec, e := RecommendWithTexture(req.Model, req.Filament, req.Quality, req.Texture)
 	if e != nil {
 		return ImportResult{}, e
 	}
@@ -634,7 +654,7 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 		}
 		return ImportResult{}, fmt.Errorf("Flash Studio non ha prodotto un progetto valido: %v\n%s", e, tail(stderr.String(), 1800))
 	}
-	markers := []string{safeProfileName("FlashFit " + rec.QualityLabel + " AD5M 0.4"), safeProfileName("FlashFit " + req.Filament.Brand + " " + req.Filament.Product)}
+	markers := []string{recommendationProfileName(rec), safeProfileName("FlashFit " + req.Filament.Brand + " " + req.Filament.Product)}
 	if e = validate3MF(candidate, markers, rec, &req.Model); e != nil {
 		return ImportResult{}, fmt.Errorf("3MF prodotto non certificato: %w", e)
 	}
@@ -903,6 +923,11 @@ func validate3MF(path string, markers []string, rec Recommendation, expectedMode
 			return fmt.Errorf("valore critico non conservato nel 3MF: %s=%s", k, expected[k])
 		}
 	}
+	for key, value := range rec.CriticalSettings {
+		if !keyHasTextValue(all, key, value) {
+			return fmt.Errorf("impostazione profilo non conservata nel 3MF: %s=%s", key, value)
+		}
+	}
 	return nil
 }
 
@@ -980,6 +1005,28 @@ func keyHasNumericValue(text, key, value string) bool {
 				return true
 			}
 			pos = j + 1
+		}
+		start = i + len(key)
+	}
+}
+
+func keyHasTextValue(text, key, value string) bool {
+	if key == "" || value == "" {
+		return false
+	}
+	start := 0
+	for {
+		i := strings.Index(text[start:], key)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(key) + 300
+		if end > len(text) {
+			end = len(text)
+		}
+		if strings.Contains(text[i+len(key):end], value) {
+			return true
 		}
 		start = i + len(key)
 	}
