@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	appTitle  = "FlashFit AI Spatial 4.0 Beta"
+	appTitle  = "FlashFit AI Spatial 4.2 Engineering Beta"
 	className = "FlashFitAI_Spatial_MainWindow_v40"
 
 	WM_CREATE         = 0x0001
@@ -342,8 +342,15 @@ func runDiscoveryWorker(outputPath string) int {
 		result.Error = err.Error()
 		return writeWorkerJSON(outputPath, result)
 	}
+	if calibrated, calibrationErr := shared.LoadFilamentCalibrations(calibrationPath(), base); calibrationErr == nil {
+		base = calibrated
+	} else {
+		result.Notes = append(result.Notes, "Calibrazioni bobina ignorate: "+calibrationErr.Error())
+	}
 	result.Discovery = shared.DiscoverProfiles()
-	result.Official, result.Notes = shared.ScanOfficialFilaments(15000)
+	var scanNotes []string
+	result.Official, scanNotes = shared.ScanOfficialFilaments(15000)
+	result.Notes = append(result.Notes, scanNotes...)
 	result.ProfileMeta = make(map[string]profileMeta, len(result.Discovery.Processes)+len(result.Discovery.Filaments))
 	for _, path := range append(append([]string(nil), result.Discovery.Processes...), result.Discovery.Filaments...) {
 		if _, ok := result.ProfileMeta[path]; !ok {
@@ -388,7 +395,7 @@ func main() {
 		case "--qa-textures":
 			qaTextureMode = true
 		case "--version":
-			fmt.Println("4.0.0-spatial-beta")
+			fmt.Println("4.2.0-spatial-engineering-beta")
 			return
 		}
 	}
@@ -409,7 +416,7 @@ func main() {
 }
 
 func acquireSingleInstance() bool {
-	name := utf16Ptr("Local\\FlashFitAI-4.0-Spatial-SingleInstance")
+	name := utf16Ptr("Local\\FlashFitAI-4.2-Spatial-SingleInstance")
 	h, _, e := pCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	mutexHandle = h
 	if errno, ok := e.(syscall.Errno); ok && errno == ERROR_ALREADY_EXISTS {
@@ -673,6 +680,11 @@ func loadInitialCatalog() {
 		messageBox(mainHwnd, trf("databaseError", localizeEngineText(err.Error())), appTitle, MB_OK|MB_ICONERROR)
 		return
 	}
+	if calibrated, calibrationErr := shared.LoadFilamentCalibrations(calibrationPath(), fs); calibrationErr == nil {
+		fs = calibrated
+	} else {
+		writeLog("CALIBRATION ERROR: " + calibrationErr.Error())
+	}
 	app.filaments = fs
 	app.selected = -1
 	refreshFilamentList()
@@ -868,7 +880,15 @@ func updateFilamentDetails() {
 	if f.OfficialProfile {
 		source = trf("localProfile", f.SourcePath)
 	}
-	details := fmt.Sprintf("%s %s\r\n%s: %s • %s: %s\r\n%s: %.0f °C (%.0f–%.0f) • %s: %.0f °C\r\nMVS: %.1f mm³/s • Flow: %.3f • PA: %s\r\n%s: %s\r\n%s: %s", f.Brand, f.Product, tr("material"), f.Material, tr("variant"), f.Variant, tr("nozzleTemp"), f.NozzleDefault, f.NozzleMin, f.NozzleMax, tr("bedTemp"), f.BedDefault, f.MaxVolumetricSpeed, f.FlowRatio, pa, tr("reliability"), f.Confidence, tr("source"), source)
+	calibration := tr("calibrationBaseline")
+	if f.MeasuredCalibration {
+		calibration = tr("calibrationMeasured")
+	}
+	drying := "—"
+	if f.DryTemperature > 0 && f.DryHours > 0 {
+		drying = fmt.Sprintf("%.0f °C / %.0f h", f.DryTemperature, f.DryHours)
+	}
+	details := fmt.Sprintf("%s %s\r\n%s: %s • %s: %s\r\n%s: %.0f °C (%.0f–%.0f) • %s: %.0f °C\r\nMVS: %.1f mm³/s • Flow: %.3f • PA: %s\r\n%s: %s • %s: %s\r\n%s: %s\r\n%s: %s", f.Brand, f.Product, tr("material"), f.Material, tr("variant"), f.Variant, tr("nozzleTemp"), f.NozzleDefault, f.NozzleMin, f.NozzleMax, tr("bedTemp"), f.BedDefault, f.MaxVolumetricSpeed, f.FlowRatio, pa, tr("calibration"), calibration, tr("drying"), drying, tr("reliability"), f.Confidence, tr("source"), source)
 	if app.filamentMatchTotal > len(app.filtered) {
 		details += "\r\n\r\n" + trf("shownResults", len(app.filtered), app.filamentMatchTotal)
 	}

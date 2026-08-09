@@ -29,6 +29,7 @@ func LoadBuiltinFilaments() ([]Filament, error) {
 	}
 	out := make([]Filament, 0, len(d.Filaments))
 	for _, f := range d.Filaments {
+		f = applyTechnicalProfile(f)
 		if err := ValidateFilament(f); err == nil {
 			out = append(out, f)
 		}
@@ -59,8 +60,14 @@ func ValidateFilament(f Filament) error {
 	if f.FanMin < 0 || f.FanMax > 100 || f.FanMin > f.FanMax {
 		return fmt.Errorf("ventola non valida")
 	}
+	if f.RecommendedSpeedMax < 0 || f.RecommendedSpeedMax > 600 {
+		return fmt.Errorf("velocità lineare TDS non valida")
+	}
 	if f.MaxVolumetricSpeed < 2 || f.MaxVolumetricSpeed > 32 {
 		return fmt.Errorf("portata volumetrica non valida")
+	}
+	if f.DryTemperature < 0 || f.DryTemperature > 100 || f.DryHours < 0 || f.DryHours > 48 {
+		return fmt.Errorf("parametri di essiccazione non validi")
 	}
 	if f.FlowRatio == 0 {
 		f.FlowRatio = 1

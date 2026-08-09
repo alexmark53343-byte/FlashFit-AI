@@ -254,6 +254,7 @@ var processPatchKeys = map[string]bool{
 }
 var filamentPatchKeys = map[string]bool{
 	"filament_density": true, "filament_flow_ratio": true, "filament_max_volumetric_speed": true, "nozzle_temperature": true, "nozzle_temperature_initial_layer": true, "hot_plate_temp": true, "hot_plate_temp_initial_layer": true, "textured_plate_temp": true, "textured_plate_temp_initial_layer": true, "fan_min_speed": true, "fan_max_speed": true, "enable_pressure_advance": true, "pressure_advance": true,
+	"close_fan_the_first_x_layers": true, "full_fan_speed_layer": true, "slow_down_for_layer_cooling": true, "slow_down_layer_time": true, "min_print_speed": true,
 }
 
 func ValidateSlicerExe(path string) error {
