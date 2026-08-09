@@ -52,9 +52,6 @@ jobs:
               public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
               [DllImport("user32.dll")]
-              public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
-
-              [DllImport("user32.dll")]
               public static extern bool ShowWindow(IntPtr hWnd, int command);
 
               [DllImport("user32.dll")]
@@ -74,9 +71,9 @@ jobs:
           if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw "FlashFit main window was not found." }
 
           $window = $process.MainWindowHandle
-          [FlashFitCapture]::ShowWindow($window, 9) | Out-Null
+          [FlashFitCapture]::ShowWindow($window, 3) | Out-Null
           [FlashFitCapture]::SetForegroundWindow($window) | Out-Null
-          Start-Sleep -Seconds 12
+          Start-Sleep -Seconds 20
 
           $rect = [FlashFitCapture+RECT]::new()
           if (-not [FlashFitCapture]::GetWindowRect($window, [ref]$rect)) { throw "Could not read the FlashFit window bounds." }
@@ -88,15 +85,7 @@ jobs:
           $output = Join-Path $PWD "artifacts/FlashFit-AI-Spatial-Windows.png"
           $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
           $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-          $hdc = $graphics.GetHdc()
-          try {
-              $captured = [FlashFitCapture]::PrintWindow($window, $hdc, 2)
-          } finally {
-              $graphics.ReleaseHdc($hdc)
-          }
-          if (-not $captured) {
-              $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
-          }
+          $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
           $bitmap.Save($output, [System.Drawing.Imaging.ImageFormat]::Png)
           $graphics.Dispose()
           $bitmap.Dispose()
