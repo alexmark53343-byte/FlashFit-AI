@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release or draft tag containing the Windows preview
-        required: true
+        description: Published release tag containing the Windows build
+        required: false
         default: v4.0-spatial-beta
+      encrypted_ref:
+        description: Temporary ref containing an encrypted private preview
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -17,12 +21,31 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Check out the encrypted preview
+        if: ${{ inputs.encrypted_ref != '' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.encrypted_ref }}
+
       - name: Download the published Windows build
+        if: ${{ inputs.encrypted_ref == '' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release download "${{ inputs.release_tag }}" --repo "${{ github.repository }}" --pattern "FlashFit-AI-Windows-11-x64.zip" --output FlashFit-Windows.zip
+          Expand-Archive -Path FlashFit-Windows.zip -DestinationPath FlashFit-Windows
+
+      - name: Decrypt the private Windows preview
+        if: ${{ inputs.encrypted_ref != '' }}
+        shell: pwsh
+        env:
+          FLASHFIT_PREVIEW_KEY: ${{ secrets.FLASHFIT_PREVIEW_KEY }}
+        run: |
+          $openssl = "C:\Program Files\Git\usr\bin\openssl.exe"
+          if (-not (Test-Path $openssl)) { throw "OpenSSL was not found on the Windows runner." }
+          & $openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in qa/FlashFit-AI-Windows-11-x64.zip.enc -out FlashFit-Windows.zip -pass env:FLASHFIT_PREVIEW_KEY
+          if ($LASTEXITCODE -ne 0) { throw "The private Windows preview could not be decrypted." }
           Expand-Archive -Path FlashFit-Windows.zip -DestinationPath FlashFit-Windows
 
       - name: Launch the real app and capture its window
