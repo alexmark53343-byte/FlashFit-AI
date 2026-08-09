@@ -548,6 +548,9 @@ func drawActions(hdc uintptr) {
 	drawQualityChoice(hdc, spatial.fast, "low", tr("qualityFast"))
 	drawQualityChoice(hdc, spatial.balanced, "balanced", tr("qualityBalanced"))
 	drawQualityChoice(hdc, spatial.perfect, "perfect", tr("qualityPerfect"))
+	if app.quality == "perfect" {
+		text(hdc, "✦  "+currentTextureTitle(), rect{spatial.quality.Left + 18, spatial.quality.Top + 112, spatial.quality.Right - 18, spatial.quality.Bottom - 53}, hFontSmall, rgb(83, 92, 172), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	}
 
 	drawActionCard(hdc, spatial.open, "4", tr("stepOpen"), 4)
 	button := rect{spatial.open.Left + 17, spatial.open.Bottom - 52, spatial.open.Right - 17, spatial.open.Bottom - 14}
@@ -559,6 +562,19 @@ func drawActions(hdc uintptr) {
 	} else {
 		drawSpatialRoundedMaterial(hdc, button, 19, rgb(238, 241, 248), rgb(226, 231, 241), rgb(218, 224, 235))
 		text(hdc, tr("openFlash"), inset(button, 6), hFontButton, rgb(137, 148, 171), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	}
+}
+
+func currentTextureTitle() string {
+	switch app.texture {
+	case "prism":
+		return tr("texturePrism")
+	case "carbon":
+		return tr("textureCarbon")
+	case "topographic":
+		return tr("textureTopo")
+	default:
+		return tr("textureSatin")
 	}
 }
 

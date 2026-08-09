@@ -10,6 +10,13 @@ func TestEveryLanguageHasEveryEnglishKey(t *testing.T) {
 			}
 		}
 	}
+	for code, lang := range premiumTextByLanguage {
+		for key := range premiumTextByLanguage["en"] {
+			if lang[key] == "" {
+				t.Errorf("premium language %s is missing %s", code, key)
+			}
+		}
+	}
 }
 
 func TestNormalizeLanguage(t *testing.T) {

@@ -36,6 +36,7 @@ const (
 	WM_DISCOVERY_DONE = WM_APP + 1
 	WM_ANALYSIS_DONE  = WM_APP + 2
 	WM_IMPORT_DONE    = WM_APP + 3
+	WM_SHOW_TEXTURES  = WM_APP + 4
 
 	WS_OVERLAPPEDWINDOW = 0x00CF0000
 	WS_VISIBLE          = 0x10000000
@@ -197,12 +198,13 @@ var (
 )
 
 var (
-	mainHwnd    uintptr
-	appInstance uintptr
-	hFont       uintptr
-	mutexHandle uintptr
-	uiCreateErr error
-	smokeMode   bool
+	mainHwnd      uintptr
+	appInstance   uintptr
+	hFont         uintptr
+	mutexHandle   uintptr
+	uiCreateErr   error
+	smokeMode     bool
+	qaTextureMode bool
 
 	hQualityLow, hQualityBalanced, hQualityPerfect            uintptr
 	hModelEdit, hBrowseModel, hAnalyze                        uintptr
@@ -219,6 +221,7 @@ type appState struct {
 	filtered           []int
 	selected           int
 	quality            string
+	texture            string
 	modelPath          string
 	analysis           *shared.ModelAnalysis
 	profiles           shared.DiscoveredProfiles
@@ -382,6 +385,8 @@ func main() {
 			return
 		case "--window-smoke":
 			smokeMode = true
+		case "--qa-textures":
+			qaTextureMode = true
 		case "--version":
 			fmt.Println("4.0.0-spatial-beta")
 			return
@@ -489,6 +494,9 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		}
 		loadInitialCatalog()
 		startDiscovery()
+		if qaTextureMode {
+			pPostMessage.Call(hwnd, WM_SHOW_TEXTURES, 0, 0)
+		}
 		return 0
 	case WM_SIZE:
 		layoutUI(hwnd)
@@ -525,6 +533,9 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 	case WM_IMPORT_DONE:
 		finishImport()
 		return 0
+	case WM_SHOW_TEXTURES:
+		setQuality("perfect")
+		return 0
 	case WM_CLOSE:
 		if app.importCancel != nil {
 			app.importCancel()
@@ -546,6 +557,7 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 func createUI(parent uintptr) {
 	initSpatialUI(parent)
 	app.quality = "balanced"
+	app.texture = "satin"
 	app.selected = -1
 	invalidateSpatial()
 }
@@ -650,6 +662,9 @@ func setQuality(q string) {
 	renderProfiles()
 	refreshReady()
 	invalidateSpatial()
+	if q == "perfect" {
+		showTexturePicker()
+	}
 }
 
 func loadInitialCatalog() {
@@ -1017,7 +1032,7 @@ func renderAnalysis() {
 	}
 	lines := []string{fmt.Sprintf("Modello: %s", a.Filename), fmt.Sprintf("Formato: %s • Oggetti/istanze: %d • Geometria ripulita: %t", a.InputFormat, a.ObjectCount, a.Sanitized), fmt.Sprintf("Stato: %s", status), fmt.Sprintf("Dimensioni: %.2f × %.2f × %.2f mm", a.Extents[0], a.Extents[1], a.Extents[2]), fmt.Sprintf("Triangoli: %d • Categoria: %s", a.TriangleCount, a.Category), fmt.Sprintf("Mesh chiusa: %t • Facce degeneri: %d", a.Watertight, a.DegenerateFaces), fmt.Sprintf("Sbalzi stimati: %.1f%% • Supporti: %t • Brim: %t", a.OverhangRatio*100, a.SupportSuggested, a.BrimSuggested)}
 	if f, ok := selectedFilament(); ok {
-		if r, e := shared.Recommend(a, f, app.quality); e == nil {
+		if r, e := shared.RecommendWithTexture(a, f, app.quality, app.texture); e == nil {
 			c := r.CriticalValues
 			lines = append(lines, "", "LIMITI FLASHFIT", fmt.Sprintf("Layer %.2f mm • Parete esterna %.0f mm/s • Interna %.0f mm/s", c["layer_height"], c["outer_wall_speed"], c["inner_wall_speed"]), fmt.Sprintf("Infill %.0f mm/s • Ponti %.0f mm/s • Accelerazione esterna %.0f mm/s²", c["infill_speed"], c["bridge_speed"], c["outer_acceleration"]), fmt.Sprintf("MVS %.1f mm³/s • Ugello %.0f °C • Piano %.0f °C", c["max_volumetric_speed"], c["nozzle_temperature"], c["bed_temperature"]), "", strings.Join(r.Reasons, "\r\n"))
 		}
@@ -1111,7 +1126,7 @@ func startImport() {
 	setBusy(true)
 	setStatusKey("statusImporting")
 	out := defaultOutputDir()
-	req := shared.ImportRequest{Model: a, Filament: f, Quality: app.quality, SlicerExe: app.slicer, Machine: app.machine, BaseProcess: app.process, BaseFilament: app.baseFilament, OutputDir: out}
+	req := shared.ImportRequest{Model: a, Filament: f, Quality: app.quality, Texture: app.texture, SlicerExe: app.slicer, Machine: app.machine, BaseProcess: app.process, BaseFilament: app.baseFilament, OutputDir: out}
 	go func(runCtx context.Context) {
 		var r shared.ImportResult
 		var e error

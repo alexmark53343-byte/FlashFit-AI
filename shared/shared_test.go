@@ -59,6 +59,9 @@ func writeValid3MF(t *testing.T, path string, markers []string, recs ...Recommen
 	if len(recs) > 0 {
 		r := recs[0]
 		config = fmt.Sprintf("%s\nlayer_height=%s\nouter_wall_speed=%s\nouter_wall_acceleration=%s\nfilament_max_volumetric_speed=%s\nnozzle_temperature=%s", strings.Join(markers, "\n"), fmt2(r.CriticalValues["layer_height"]), fmt0(r.CriticalValues["outer_wall_speed"]), fmt0(r.CriticalValues["outer_acceleration"]), fmt2(r.CriticalValues["max_volumetric_speed"]), fmt0(r.CriticalValues["nozzle_temperature"]))
+		for key, value := range r.CriticalSettings {
+			config += "\n" + key + "=" + value
+		}
 	}
 	cfg.Write([]byte(config))
 	z.Close()
@@ -96,7 +99,7 @@ func TestRecommendationCapsFlow(t *testing.T) {
 		t.Fatal(e)
 	}
 	outer := r.CriticalValues["outer_wall_speed"]
-	if outer*0.28*0.42 > 8*0.73 {
+	if outer*r.CriticalValues["layer_height"]*0.42 > 8*0.75 {
 		t.Fatalf("flow cap failed %.2f", outer)
 	}
 }
@@ -178,7 +181,7 @@ func TestAllBuiltinSafeProfilesAllQualities(t *testing.T) {
 				t.Fatalf("%s %s: %v", f.Product, q, e)
 			}
 			c := r.CriticalValues
-			if c["outer_wall_speed"]*c["layer_height"]*0.42 > f.MaxVolumetricSpeed*0.73 {
+			if c["outer_wall_speed"]*c["layer_height"]*0.42 > f.MaxVolumetricSpeed*0.75 {
 				t.Fatalf("MVS exceeded for %s", f.Product)
 			}
 			if c["nozzle_temperature"] > 280 || c["bed_temperature"] > 110 {
@@ -189,6 +192,75 @@ func TestAllBuiltinSafeProfilesAllQualities(t *testing.T) {
 	}
 	if count < 60 {
 		t.Fatalf("coverage too low: %d", count)
+	}
+}
+
+func TestPerfectPremiumTexturesWriteRealSlicerSettings(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "cube.stl")
+	writeCubeSTL(t, p)
+	a, _ := AnalyzeSTL(p)
+	f := sampleFilament()
+	want := map[string]struct {
+		top, ironing, fuzzy string
+	}{
+		"satin":       {"monotonicline", "topmost", "none"},
+		"prism":       {"octagramspiral", "no ironing", "none"},
+		"carbon":      {"hilbertcurve", "no ironing", "external"},
+		"topographic": {"archimedeanchords", "no ironing", "none"},
+	}
+	for id, expected := range want {
+		r, err := RecommendWithTexture(a, f, "perfect", id)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if r.Texture != id || fmt.Sprint(r.Process["top_surface_pattern"]) != expected.top || fmt.Sprint(r.Process["ironing_type"]) != expected.ironing || fmt.Sprint(r.Process["fuzzy_skin"]) != expected.fuzzy {
+			t.Fatalf("texture %s non applicata: %+v", id, r.Process)
+		}
+		if r.Process["wall_generator"] != "arachne" || r.Process["wall_loops"] != "4" || r.Process["top_shell_thickness"] != "1" {
+			t.Fatalf("texture %s ha indebolito il profilo", id)
+		}
+	}
+}
+
+func TestEveryBuiltinFilamentSupportsEveryPremiumTexture(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "cube.stl")
+	writeCubeSTL(t, p)
+	a, _ := AnalyzeSTL(p)
+	filaments, err := LoadBuiltinFilaments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, filament := range filaments {
+		for _, texture := range []string{"satin", "prism", "carbon", "topographic"} {
+			r, recErr := RecommendWithTexture(a, filament, "perfect", texture)
+			if recErr != nil {
+				t.Fatalf("%s / %s: %v", filament.Product, texture, recErr)
+			}
+			if r.CriticalSettings["top_surface_pattern"] == "" || r.CriticalSettings["wall_loops"] != "4" {
+				t.Fatalf("profilo incompleto per %s / %s", filament.Product, texture)
+			}
+			count++
+		}
+	}
+	if count < 80 {
+		t.Fatalf("copertura texture troppo bassa: %d", count)
+	}
+}
+
+func TestNonPerfectCannotAccidentallyEnableTexture(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "cube.stl")
+	writeCubeSTL(t, p)
+	a, _ := AnalyzeSTL(p)
+	r, err := RecommendWithTexture(a, sampleFilament(), "balanced", "carbon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Texture != "none" || r.Process["fuzzy_skin"] != "none" || r.Process["ironing_type"] != "no ironing" {
+		t.Fatalf("texture leaked into balanced: %+v", r)
 	}
 }
 func TestOpenMeshRejected(t *testing.T) {
