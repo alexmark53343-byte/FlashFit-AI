@@ -1,0 +1,105 @@
+name: Capture Windows UI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download the published Windows build
+        shell: pwsh
+        run: |
+          $url = "https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.0-spatial-beta/FlashFit-AI-Windows-11-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile FlashFit-Windows.zip
+          Expand-Archive -Path FlashFit-Windows.zip -DestinationPath FlashFit-Windows
+
+      - name: Launch the real app and capture its window
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class FlashFitCapture {
+              [StructLayout(LayoutKind.Sequential)]
+              public struct RECT {
+                  public int Left;
+                  public int Top;
+                  public int Right;
+                  public int Bottom;
+              }
+
+              [DllImport("user32.dll")]
+              public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+              [DllImport("user32.dll")]
+              public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
+
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(IntPtr hWnd, int command);
+
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
+          $exe = Get-ChildItem -Path FlashFit-Windows -Recurse -Filter FlashFit-AI-Windows-11.exe | Select-Object -First 1
+          if (-not $exe) { throw "FlashFit executable not found after extraction." }
+
+          $process = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+          $deadline = (Get-Date).AddSeconds(75)
+          do {
+              Start-Sleep -Milliseconds 500
+              $process.Refresh()
+          } while ($process.MainWindowHandle -eq [IntPtr]::Zero -and -not $process.HasExited -and (Get-Date) -lt $deadline)
+
+          if ($process.HasExited) { throw "FlashFit exited before its main window appeared." }
+          if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw "FlashFit main window was not found." }
+
+          $window = $process.MainWindowHandle
+          [FlashFitCapture]::ShowWindow($window, 9) | Out-Null
+          [FlashFitCapture]::SetForegroundWindow($window) | Out-Null
+          Start-Sleep -Seconds 12
+
+          $rect = [FlashFitCapture+RECT]::new()
+          if (-not [FlashFitCapture]::GetWindowRect($window, [ref]$rect)) { throw "Could not read the FlashFit window bounds." }
+
+          $width = $rect.Right - $rect.Left
+          $height = $rect.Bottom - $rect.Top
+          if ($width -lt 400 -or $height -lt 300) { throw "FlashFit returned invalid window bounds: ${width}x${height}." }
+
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $output = Join-Path $PWD "artifacts\FlashFit-AI-Spatial-Windows.png"
+          $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $hdc = $graphics.GetHdc()
+          try {
+              $captured = [FlashFitCapture]::PrintWindow($window, $hdc, 2)
+          } finally {
+              $graphics.ReleaseHdc($hdc)
+          }
+
+          if (-not $captured) {
+              $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
+          }
+
+          $bitmap.Save($output, [System.Drawing.Imaging.ImageFormat]::Png)
+          $graphics.Dispose()
+          $bitmap.Dispose()
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+
+          Get-Item $output | Format-List FullName, Length
+
+      - name: Upload the real Windows screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: flashfit-windows-spatial-screenshot
+          path: artifacts/FlashFit-AI-Spatial-Windows.png
+          if-no-files-found: error
