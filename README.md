@@ -8,7 +8,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Official downloads
 
-- [Windows 11 x64 — FlashFit AI 4.1 Spatial Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.1-spatial-beta/FlashFit-AI-Windows-11-x64.zip)
+- [Windows 11 x64 — FlashFit AI 4.2 Engineering Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.2-spatial-engineering-beta/FlashFit-AI-Windows-11-x64.zip)
 - [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
 
 ## Current release
@@ -21,13 +21,14 @@ The application inspects the actual mesh—including dimensions, topology, overh
 - Flashforge Adventurer 5M with a 0.4 mm nozzle
 - Single-color and single-extruder workflow
 - STL, OBJ, and 3MF analysis
-- Fast, Balanced, and Perfect print strategies
-- 53 profiles covering PLA, PETG, ABS, and TPU
+- Fast, Balanced, and Perfect print strategies with duration-aware quality scaling
+- 23 safe PLA/PETG profiles backed by official TDS data and AD5M engineering limits
+- Optional measured per-spool overrides for temperature, volumetric flow, pressure advance, and flow ratio
 - Direct Flash Studio project generation
 
 ## Platform availability
 
-FlashFit AI is currently available as **Windows 11 x64 4.1 Spatial Beta** and **macOS Apple Silicon 3.6 Beta**.
+FlashFit AI is currently available as **Windows 11 x64 4.2 Engineering Beta** and **macOS Apple Silicon 3.6 Beta**.
 
 ## Beta notice
 
@@ -54,9 +55,9 @@ Designed and developed in Italy by one independent developer. 🇮🇹
 
 The project is intentionally small and personal. The application and its profile engine are maintained exclusively by its original developer; this public repository distributes compiled beta releases and public documentation only.
 
-## Windows 4.1 Spatial UI
+## Windows 4.2 Spatial Engineering UI
 
-![FlashFit AI 4.1 Spatial UI running on Windows 11](docs/FlashFit-AI-Spatial-4.1-Windows.png)
+![FlashFit AI 4.2 Spatial UI running on Windows 11](docs/FlashFit-AI-Spatial-4.1-Windows.png)
 
 <img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 56 24" src="https://github.com/user-attachments/assets/735e2d0e-5677-4f57-b83b-8d521991f046" />
 <img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 55 55" src="https://github.com/user-attachments/assets/53450b25-8192-40c9-bb5c-7928c4536b80" />
