@@ -88,10 +88,14 @@ func TestResolveBambuMachineUsesInstalledLowerLimits(t *testing.T) {
 	}
 }
 
-func TestResolvePrinterRejectsWrongNozzle(t *testing.T) {
+func TestResolvePrinterKeepsInstalledNozzle(t *testing.T) {
 	path := writeMachineProfile(t, "Bambu Lab A1 mini 0.6 nozzle", "0.6", nil)
-	if _, err := ResolvePrinterProfile(path); err == nil || !strings.Contains(err.Error(), "0,4 mm") {
-		t.Fatalf("ugello non bloccato: %v", err)
+	printer, err := ResolvePrinterProfile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if printer.ID != "bambu-a1-mini" || printer.NozzleDiameter != 0.6 {
+		t.Fatalf("ugello installato non mantenuto: %+v", printer)
 	}
 }
 

@@ -112,8 +112,9 @@ func DiscoverProfiles() DiscoveredProfiles {
 			switch typ {
 			case "machine", "printer":
 				printer, matchErr := resolvePrinterMap(m)
-				if matchErr == nil && !seenM[printer.ID] {
-					seenM[printer.ID] = true
+				machineKey := fmt.Sprintf("%s|%.2f", printer.ID, printer.NozzleDiameter)
+				if matchErr == nil && !seenM[machineKey] {
+					seenM[machineKey] = true
 					kind := "flash"
 					if strings.EqualFold(printer.Brand, "Bambu Lab") {
 						kind = "bambu"
@@ -147,15 +148,21 @@ func DiscoverProfiles() DiscoveredProfiles {
 		if d.Machines[i].Brand != d.Machines[j].Brand {
 			return d.Machines[i].Brand < d.Machines[j].Brand
 		}
-		return d.Machines[i].Model < d.Machines[j].Model
+		if d.Machines[i].Model != d.Machines[j].Model {
+			return d.Machines[i].Model < d.Machines[j].Model
+		}
+		return d.Machines[i].NozzleMM < d.Machines[j].NozzleMM
 	})
 	for _, machine := range d.Machines {
-		if d.Machine == "" || machine.PrinterID == "flashforge-adventurer-5m" {
+		currentPrinter, _ := ResolvePrinterProfile(d.Machine)
+		preferDefaultNozzle := machine.PrinterID == "flashforge-adventurer-5m" && math.Abs(machine.NozzleMM-0.4) < 0.001
+		preferDefaultModel := machine.PrinterID == "flashforge-adventurer-5m" && currentPrinter.ID != "flashforge-adventurer-5m"
+		if d.Machine == "" || preferDefaultModel || preferDefaultNozzle {
 			d.Machine = machine.Path
 			if machine.SlicerExe != "" {
 				d.SlicerExe = machine.SlicerExe
 			}
-			if machine.PrinterID == "flashforge-adventurer-5m" {
+			if preferDefaultNozzle {
 				break
 			}
 		}
@@ -166,7 +173,7 @@ func DiscoverProfiles() DiscoveredProfiles {
 		d.Notes = append(d.Notes, "Flash Studio Desktop o Bambu Studio non rilevato automaticamente.")
 	}
 	if d.Machine == "" {
-		d.Notes = append(d.Notes, "Nessun profilo macchina Flashforge/Bambu Lab 0.4 supportato rilevato.")
+		d.Notes = append(d.Notes, "Nessun profilo macchina Flashforge/Bambu Lab supportato rilevato.")
 	}
 	if len(d.Processes) == 0 {
 		d.Notes = append(d.Notes, "Nessun profilo processo compatibile ufficiale trovato.")
@@ -597,18 +604,29 @@ func recommendationProfileName(rec Recommendation) string {
 	if rec.Quality == "perfect" && rec.TextureLabel != "" && rec.Texture != "none" {
 		name += " - " + rec.TextureLabel
 	}
-	return safeProfileName(name + " AD5M 0.4")
+	return safeProfileName(name + " AD5M " + nozzleLabel(DefaultPrinterProfile().NozzleDiameter))
 }
 
 func recommendationProfileNameForPrinter(rec Recommendation, printer PrinterProfile) string {
 	if printer.ID == "flashforge-adventurer-5m" {
-		return recommendationProfileName(rec)
+		name := "FlashFit " + rec.QualityLabel
+		if rec.Quality == "perfect" && rec.TextureLabel != "" && rec.Texture != "none" {
+			name += " - " + rec.TextureLabel
+		}
+		return safeProfileName(name + " AD5M " + nozzleLabel(printer.NozzleDiameter))
 	}
 	name := "FlashFit " + rec.QualityLabel
 	if rec.Quality == "perfect" && rec.TextureLabel != "" && rec.Texture != "none" {
 		name += " - " + rec.TextureLabel
 	}
-	return safeProfileName(fmt.Sprintf("%s %s 0.4", name, printer.Model))
+	return safeProfileName(fmt.Sprintf("%s %s %s", name, printer.Model, nozzleLabel(printer.NozzleDiameter)))
+}
+
+func nozzleLabel(mm float64) string {
+	if mm <= 0 {
+		mm = 0.4
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", mm), "0"), ".")
 }
 func atomicJSON(path string, v any) error {
 	b, e := json.MarshalIndent(v, "", "  ")
