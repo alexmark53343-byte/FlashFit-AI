@@ -273,7 +273,7 @@ func classifyAnalysis(a *ModelAnalysis) {
 		a.Warnings = append(a.Warnings, fmt.Sprintf("Rilevate %d facce degeneri: il modello non viene modificato e l'importazione è bloccata.", a.DegenerateFaces))
 	}
 	if x > 220 || y > 220 || z > 220 {
-		a.Warnings = append(a.Warnings, "Il modello, nell'orientamento attuale, supera il volume 220×220×220 mm.")
+		a.Warnings = append(a.Warnings, "Il modello supera il volume delle stampanti compatte: FlashFit verificherà il volume della macchina selezionata.")
 	}
 	if a.SupportSuggested {
 		a.Warnings = append(a.Warnings, "Sono presenti sbalzi marcati: controllare i supporti nell'anteprima layer.")
@@ -290,8 +290,10 @@ func ValidateAnalysis(a ModelAnalysis) error {
 	if a.DegenerateFaces != 0 {
 		return errors.New("mesh con facce degeneri: FlashFit non la ripara automaticamente")
 	}
-	if a.Extents[0] > 220 || a.Extents[1] > 220 || a.Extents[2] > 220 {
-		return errors.New("modello fuori dal volume AD5M 220×220×220 mm nell'orientamento attuale")
+	// Global parsing envelope: the exact build-volume check is performed against
+	// the selected printer immediately before recommendation/import.
+	if a.Extents[0] > 350 || a.Extents[1] > 330 || a.Extents[2] > 600 {
+		return errors.New("modello fuori dal volume massimo delle stampanti supportate (350×330×600 mm)")
 	}
 	if a.TriangleCount <= 0 || a.TriangleCount > MaxTriangles {
 		return errors.New("numero triangoli fuori limite")

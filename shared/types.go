@@ -57,6 +57,8 @@ type ModelAnalysis struct {
 }
 
 type Recommendation struct {
+	PrinterID                string             `json:"printer_id"`
+	PrinterLabel             string             `json:"printer_label"`
 	Quality                  string             `json:"quality"`
 	QualityLabel             string             `json:"quality_label"`
 	Texture                  string             `json:"texture"`

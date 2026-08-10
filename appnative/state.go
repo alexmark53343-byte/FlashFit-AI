@@ -11,9 +11,10 @@ import (
 )
 
 type profileMeta struct {
-	Type     string
-	Name     string
-	Material string
+	Type       string
+	Name       string
+	Material   string
+	Compatible string
 }
 
 func readProfileMeta(path string) profileMeta {
@@ -41,7 +42,8 @@ func readProfileMeta(path string) profileMeta {
 			return ""
 		}
 	}
-	return profileMeta{Type: strings.ToLower(scalar(m["type"])), Name: scalar(m["name"]), Material: strings.ToUpper(scalar(m["filament_type"]))}
+	compatible := strings.Join([]string{scalar(m["compatible_printers"]), scalar(m["compatible_printers_condition"]), scalar(m["printer_model"]), scalar(m["inherits"])}, " ")
+	return profileMeta{Type: strings.ToLower(scalar(m["type"])), Name: scalar(m["name"]), Material: strings.ToUpper(scalar(m["filament_type"])), Compatible: compatible}
 }
 
 func mergeFilaments(base, official []shared.Filament) []shared.Filament {
@@ -93,17 +95,23 @@ func filterFilaments(fs []shared.Filament, query string) []int {
 }
 
 func processScore(path, quality string, cache map[string]profileMeta) int {
+	return processScoreForPrinter(path, quality, shared.DefaultPrinterProfile(), cache)
+}
+
+func processScoreForPrinter(path, quality string, printer shared.PrinterProfile, cache map[string]profileMeta) int {
 	m := cache[path]
 	if m == (profileMeta{}) {
 		m = readProfileMeta(path)
 	}
-	hay := strings.ToLower(path + " " + m.Name)
+	hay := strings.ToLower(path + " " + m.Name + " " + m.Compatible)
 	score := 0
 	if m.Type == "process" {
 		score += 100
 	}
-	if strings.Contains(hay, "adventurer 5m") || strings.Contains(hay, "ad5m") {
-		score += 80
+	if shared.PrinterTextMatches(printer, hay) {
+		score += 120
+	} else if _, matched := shared.MatchPrinterText(hay); matched {
+		return -1000
 	}
 	switch quality {
 	case "low":
@@ -135,16 +143,23 @@ func processScore(path, quality string, cache map[string]profileMeta) int {
 }
 
 func chooseProcess(paths []string, quality string, caches ...map[string]profileMeta) string {
+	return chooseProcessForPrinter(paths, quality, shared.DefaultPrinterProfile(), caches...)
+}
+
+func chooseProcessForPrinter(paths []string, quality string, printer shared.PrinterProfile, caches ...map[string]profileMeta) string {
 	cache := map[string]profileMeta{}
 	if len(caches) > 0 && caches[0] != nil {
 		cache = caches[0]
 	}
 	best, bestScore := "", -1
 	for _, p := range paths {
-		s := processScore(p, quality, cache)
+		s := processScoreForPrinter(p, quality, printer, cache)
 		if s > bestScore {
 			best, bestScore = p, s
 		}
+	}
+	if bestScore < 0 {
+		return ""
 	}
 	return best
 }

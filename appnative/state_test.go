@@ -31,6 +31,18 @@ func TestChooseProfiles(t *testing.T) {
 		t.Fatal("low profile selection")
 	}
 }
+
+func TestChooseProcessMatchesSelectedBambuPrinter(t *testing.T) {
+	d := t.TempDir()
+	a1 := filepath.Join(d, "0.20 Standard BBL A1.json")
+	p2s := filepath.Join(d, "0.20 Standard BBL P2S.json")
+	os.WriteFile(a1, []byte(`{"type":"process","name":"0.20mm Standard @BBL A1","compatible_printers":["Bambu Lab A1 0.4 nozzle"]}`), 0600)
+	os.WriteFile(p2s, []byte(`{"type":"process","name":"0.20mm Standard @BBL P2S","compatible_printers":["Bambu Lab P2S 0.4 nozzle"]}`), 0600)
+	printer, _ := shared.PrinterByID("bambu-p2s")
+	if got := chooseProcessForPrinter([]string{a1, p2s}, "balanced", printer); got != p2s {
+		t.Fatalf("profilo P2S non selezionato: %s", got)
+	}
+}
 func TestChooseBaseFilamentMatchesMaterial(t *testing.T) {
 	d := t.TempDir()
 	pla := filepath.Join(d, "pla.json")
