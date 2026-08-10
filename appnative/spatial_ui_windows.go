@@ -403,7 +403,7 @@ func drawDevicePill(hdc uintptr) {
 	drawSpatialSoftShadow(hdc, r, 25, 4, 2, rgb(64, 84, 140), 18)
 	drawSpatialRoundedMaterial(hdc, r, 25, rgb(255, 255, 255), rgb(246, 248, 253), rgb(228, 233, 243))
 	drawPrinterIcon(hdc, r.Left+36, (r.Top+r.Bottom)/2, rgb(70, 82, 110))
-	text(hdc, selectedPrinterLabel()+"   •   "+tr("nozzle"), rect{r.Left + 62, r.Top, r.Right - 45, r.Bottom}, hFontBody, rgb(35, 40, 53), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, selectedPrinterLabel()+"   |   "+selectedNozzleLabel(), rect{r.Left + 62, r.Top, r.Right - 45, r.Bottom}, hFontBody, rgb(35, 40, 53), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	text(hdc, "⌄", rect{r.Right - 42, r.Top - 2, r.Right - 17, r.Bottom}, hFontHeading, rgb(49, 56, 73), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 }
 
@@ -758,28 +758,7 @@ func spatialClick(x, y int32) {
 }
 
 func showPrinterMenu() {
-	if len(app.printerChoices) == 0 {
-		startDiscovery()
-		return
-	}
-	items := make([]struct {
-		id    int
-		label string
-	}, 0, len(app.printerChoices))
-	for i, choice := range app.printerChoices {
-		label := choice.Label + "  •  0.4 mm"
-		if i == app.printerIndex {
-			label = "✓  " + label
-		}
-		items = append(items, struct {
-			id    int
-			label string
-		}{idPrinterBase + i, label})
-	}
-	cmd := popupCommand(items)
-	if cmd >= idPrinterBase && cmd < idPrinterBase+len(app.printerChoices) {
-		selectDiscoveredMachine(cmd - idPrinterBase)
-	}
+	showPrinterPicker()
 }
 
 func popupCommand(items []struct {
@@ -857,15 +836,16 @@ func showFilamentPicker() {
 		return
 	}
 	title := utf16Ptr(tr("filamentTitle"))
-	h, _, _ := pCreateWindowEx.Call(0x00000001, uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(title)), WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_CLIPCHILDREN, 210, 130, 760, 640, mainHwnd, 0, inst, 0)
+	h, _, _ := pCreateWindowEx.Call(0x00000001, uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(title)), WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_CLIPCHILDREN, 190, 105, 920, 670, mainHwnd, 0, inst, 0)
 	if h != 0 {
 		hFilamentDialog = h
+		setPremiumWindowMaterial(h)
 		pShowWindow.Call(h, SW_SHOWNORMAL)
 		pSetForegroundWindow.Call(h)
 	}
 }
 
-const filamentClassName = "FlashFitAI_Spatial_FilamentPicker_v40"
+const filamentClassName = "FlashFitAI_Spatial_FilamentPicker_v41"
 
 var filamentClassAtom uintptr
 
@@ -884,21 +864,75 @@ func registerFilamentClass(inst uintptr) uintptr {
 
 func filamentWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintptr) {
 	switch message {
+	case WM_GETMINMAXINFO:
+		mmi := (*minMaxInfo)(unsafe.Pointer(lParam))
+		mmi.MinTrackSize = point{X: 760, Y: 540}
+		return 0
 	case WM_CREATE:
 		hFilamentDialog = hwnd
-		hFilamentSearchLabel = control(hwnd, "STATIC", tr("searchFilament"), WS_CHILD|WS_VISIBLE, 0, 0)
-		hSearch = control(hwnd, "EDIT", "", WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, idFilamentSearch)
-		hFilamentList = control(hwnd, "LISTBOX", "", WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT, WS_EX_CLIENTEDGE, idFilamentResults)
-		hFilamentDetails = control(hwnd, "EDIT", "", WS_CHILD|WS_VISIBLE|WS_BORDER|ES_MULTILINE|ES_AUTOVSCROLL|ES_READONLY|WS_VSCROLL, WS_EX_CLIENTEDGE, 0)
-		hFilamentApply = control(hwnd, "BUTTON", tr("useFilament"), WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON, 0, idFilamentApply)
-		hFilamentClose = control(hwnd, "BUTTON", tr("close"), WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON, 0, idFilamentClose)
+		hSearch = control(hwnd, "EDIT", "", WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_AUTOHSCROLL, 0, idFilamentSearch)
 		cue := utf16Ptr(tr("searchFilament"))
 		pSendMessage.Call(hSearch, EM_SETCUEBANNER, 1, uintptr(unsafe.Pointer(cue)))
+		pSetTimer.Call(hwnd, idFilamentAnimation, spatialAnimationInterval, 0)
 		refreshFilamentList()
 		layoutFilamentDialog(hwnd)
 		pSetFocus.Call(hSearch)
 		return 0
+	case WM_PAINT:
+		paintFilamentPicker(hwnd)
+		return 0
+	case WM_ERASEBKGND:
+		return 1
+	case WM_TIMER:
+		foreground, _, _ := pGetForegroundWindow.Call()
+		if wParam == idFilamentAnimation && foreground == hwnd {
+			filamentPickerAnimationTick++
+			pInvalidateRect.Call(hwnd, 0, 0)
+		}
+		return 0
+	case WM_MOUSEWHEEL:
+		delta := int16((wParam >> 16) & 0xffff)
+		if delta > 0 {
+			filamentPickerScroll--
+		} else {
+			filamentPickerScroll++
+		}
+		clampFilamentScroll()
+		pInvalidateRect.Call(hwnd, 0, 0)
+		return 0
+	case WM_KEYDOWN:
+		switch wParam {
+		case VK_ESCAPE:
+			pDestroyWindow.Call(hwnd)
+		case VK_RETURN:
+			pDestroyWindow.Call(hwnd)
+		case VK_UP:
+			if row := selectedFilamentRow(); row > 0 {
+				selectFilamentFromFilteredRow(row - 1)
+			}
+		case VK_DOWN:
+			if row := selectedFilamentRow(); row >= 0 && row < len(app.filtered)-1 {
+				selectFilamentFromFilteredRow(row + 1)
+			}
+		}
+		return 0
+	case WM_LBUTTONUP:
+		x, y := pointFromLParam(lParam)
+		if contains(filamentLayout.search, x, y) {
+			pSetFocus.Call(hSearch)
+			return 0
+		}
+		if row := filamentPickerHitRow(x, y); row >= 0 {
+			selectFilamentFromFilteredRow(row)
+			return 0
+		}
+		if contains(filamentLayout.apply, x, y) || contains(filamentLayout.close, x, y) {
+			pDestroyWindow.Call(hwnd)
+			return 0
+		}
+		return 0
 	case WM_SIZE:
+		filamentPickerBuffer.reset()
 		layoutFilamentDialog(hwnd)
 		return 0
 	case WM_COMMAND:
@@ -907,6 +941,7 @@ func filamentWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (r
 		switch id {
 		case idFilamentSearch:
 			if notify == EN_CHANGE {
+				filamentPickerScroll = 0
 				refreshFilamentList()
 			}
 		case idFilamentResults:
@@ -922,6 +957,8 @@ func filamentWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (r
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case WM_DESTROY:
+		pKillTimer.Call(hwnd, idFilamentAnimation)
+		filamentPickerBuffer.reset()
 		hFilamentDialog, hSearch, hFilamentList, hFilamentDetails = 0, 0, 0, 0
 		hFilamentSearchLabel, hFilamentApply, hFilamentClose = 0, 0, 0
 		invalidateSpatial()
@@ -944,14 +981,11 @@ func layoutFilamentDialog(hwnd uintptr) {
 	if h < 500 {
 		h = 500
 	}
-	m := 22
-	move(hFilamentSearchLabel, m, 18, w-2*m, 24)
-	move(hSearch, m, 48, w-2*m, 36)
-	listW := (w - 3*m) * 55 / 100
-	move(hFilamentList, m, 100, listW, h-178)
-	move(hFilamentDetails, 2*m+listW, 100, w-3*m-listW, h-178)
-	move(hFilamentClose, w-m-250, h-58, 110, 36)
-	move(hFilamentApply, w-m-130, h-58, 130, 36)
+	filamentLayout = calculateFilamentLayout(int32(w), int32(h))
+	search := filamentLayout.search
+	move(hSearch, int(search.Left+54), int(search.Top+8), int(width(search)-74), int(height(search)-16))
+	ensureSelectedFilamentVisible()
+	pInvalidateRect.Call(hwnd, 0, 0)
 }
 
 func updateFilamentDialogLanguage() {

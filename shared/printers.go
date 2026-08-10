@@ -32,8 +32,8 @@ type PrinterProfile struct {
 	OfficialTechnicalSource string     `json:"official_technical_source"`
 }
 
-// The catalog covers the current Flash Studio Desktop lineup and every 0.4 mm
-// Bambu Studio machine family shipped in Bambu Lab's official profile tree.
+// The catalog covers the current Flash Studio Desktop lineup and every Bambu
+// Studio machine family shipped in Bambu Lab's official profile tree.
 // Values are hard safety ceilings; the installed machine JSON remains the
 // primary authority and may lower them further.
 var supportedPrinters = []PrinterProfile{
@@ -158,8 +158,8 @@ func resolvePrinterMap(m map[string]any) (PrinterProfile, error) {
 	if nozzle == 0 {
 		nozzle = p.NozzleDiameter
 	}
-	if math.Abs(nozzle-0.4) > 0.001 {
-		return PrinterProfile{}, fmt.Errorf("profilo %s usa ugello %.2f mm: questa build richiede 0,4 mm", p.Model, nozzle)
+	if nozzle < 0.1 || nozzle > 1.2 {
+		return PrinterProfile{}, fmt.Errorf("profilo %s usa un ugello non valido: %.2f mm", p.Model, nozzle)
 	}
 	p.NozzleDiameter = nozzle
 	if v := firstFloat(m["machine_max_speed_x"]); v > 0 {

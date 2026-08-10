@@ -898,6 +898,7 @@ func refreshFilamentList() {
 		app.selected = -1
 	}
 	updateFilamentDetails()
+	ensureSelectedFilamentVisible()
 	autoSelectProfiles()
 	renderAnalysis()
 	renderProfiles()
@@ -931,6 +932,9 @@ func updateFilamentDetails() {
 	f, ok := selectedFilament()
 	if !ok {
 		setText(hFilamentDetails, tr("noFilament"))
+		if hFilamentDialog != 0 {
+			pInvalidateRect.Call(hFilamentDialog, 0, 0)
+		}
 		return
 	}
 	pa := tr("fromBase")
@@ -954,6 +958,9 @@ func updateFilamentDetails() {
 		details += "\r\n\r\n" + trf("shownResults", len(app.filtered), app.filamentMatchTotal)
 	}
 	setText(hFilamentDetails, details)
+	if hFilamentDialog != 0 {
+		pInvalidateRect.Call(hFilamentDialog, 0, 0)
+	}
 }
 
 func setModelPath(path string) {
@@ -1195,7 +1202,7 @@ func selectDiscoveredMachine(index int) {
 	renderAnalysis()
 	renderProfiles()
 	refreshReady()
-	setStatusKey("statusPrinterSelected", choice.Label)
+	setStatusKey("statusPrinterSelected", choice.Label+" "+formatNozzleMM(printer.NozzleDiameter))
 	invalidateSpatial()
 }
 func renderProfiles() {

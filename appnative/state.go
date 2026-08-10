@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -113,6 +114,9 @@ func processScoreForPrinter(path, quality string, printer shared.PrinterProfile,
 	} else if _, matched := shared.MatchPrinterText(hay); matched {
 		return -1000
 	}
+	if !profileNozzleCompatible(hay, printer.NozzleDiameter) {
+		return -1000
+	}
 	switch quality {
 	case "low":
 		for _, x := range []string{"0.28", "0.3", "draft", "fast"} {
@@ -133,13 +137,52 @@ func processScoreForPrinter(path, quality string, printer shared.PrinterProfile,
 			}
 		}
 	}
-	if strings.Contains(hay, "0.4") {
+	if strings.Contains(hay, fmt.Sprintf("%.1f", printer.NozzleDiameter)) {
 		score += 8
 	}
 	if strings.Contains(strings.ToLower(filepath.Base(path)), "user") {
 		score -= 5
 	}
 	return score
+}
+
+func profileNozzleCompatible(text string, nozzle float64) bool {
+	wanted := formatNozzleValue(nozzle)
+	mentioned := false
+	for _, candidate := range []string{"0.2", "0.25", "0.3", "0.4", "0.5", "0.6", "0.8", "1"} {
+		if profileMentionsNozzleValue(text, candidate) {
+			mentioned = true
+			if candidate == wanted {
+				return true
+			}
+		}
+	}
+	return !mentioned
+}
+
+func profileMentionsNozzleValue(text, value string) bool {
+	for _, token := range []string{
+		value + " nozzle",
+		value + "mm nozzle",
+		value + " mm nozzle",
+		"nozzle " + value,
+		value + " buse",
+		value + " boquilla",
+		value + " duese",
+		value + " ugello",
+	} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatNozzleValue(mm float64) string {
+	if mm <= 0 {
+		mm = 0.4
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", mm), "0"), ".")
 }
 
 func chooseProcess(paths []string, quality string, caches ...map[string]profileMeta) string {
