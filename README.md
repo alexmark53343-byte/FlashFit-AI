@@ -1,6 +1,6 @@
 # FlashFit AI
 
-FlashFit AI is an Italian project that analyzes 3D models and automatically prepares optimized slicing settings for the Flashforge Adventurer 5M.
+FlashFit AI is an Italian project that analyzes 3D models and automatically prepares guarded slicing settings for supported Flashforge and Bambu Lab printers.
 
 It is an independent project created and developed by a single Italian developer. FlashFit AI began with a simple frustration: advanced slicers are powerful, but finding the right combination of settings for every model and filament is still unnecessarily difficult. The project grew from that idea into a focused assistant that studies the geometry first and builds a safer, more appropriate printing strategy around it.
 
@@ -8,7 +8,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Official downloads
 
-- [Windows 11 x64 — FlashFit AI 4.2.1 Stability Fix Beta](https://github.com/alexmark53343-byte/FlashFit-AI/raw/refs/heads/main/downloads/FlashFit-AI-Windows-11-x64.zip)
+- [Windows 11 x64 — FlashFit AI 4.3 Multi-Printer Engineering Beta](https://github.com/alexmark53343-byte/FlashFit-AI/raw/refs/heads/main/downloads/FlashFit-AI-Windows-11-x64.zip)
 - [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
 
 ## Current release
@@ -21,17 +21,22 @@ The application inspects the actual mesh—including dimensions, topology, overh
 - Persistent GDI backbuffers, bounded resize caches, and idle-aware minimal animation to prevent Windows UI stalls
 - Automated one-second responsiveness and GDI-lifetime stress test for Windows release candidates
 - Embedded Windows icon, DPI-aware manifest, and Explorer version metadata
-- Flashforge Adventurer 5M with a 0.4 mm nozzle
-- Single-color and single-extruder workflow
+- Automatic detection and selection of 20 installed 0.4 mm printer families: 6 Flashforge and 14 Bambu Lab
+- Flash Studio Desktop, Bambu Studio and compatible Orca command-line engines
+- Printer-specific build-volume, hotend, bed, motion and acceleration guardrails
+- Vendor machine G-code, retraction, Flow Dynamics/Pressure Advance, purge, wipe and tool-change behavior preserved
+- Current Flashforge coverage: Creator 5, Creator 5 Pro, Adventurer 5M, Adventurer 5M Pro, AD5X and Guider 3 Ultra
+- Bambu Lab coverage: A1 mini, A1, A2L, P1P, P1S, P2S, X1, X1 Carbon, X1E, X2D, H2C, H2D, H2D Pro and H2S
+- Single-material optimization workflow; vendor multi-material mechanics remain untouched
 - STL, OBJ, and 3MF analysis
 - Fast, Balanced, and Perfect print strategies with duration-aware quality scaling
-- 23 safe PLA/PETG profiles backed by official TDS data and AD5M engineering limits
+- 23 built-in safe PLA/PETG baselines plus compatible official profiles discovered from the installed slicer
 - Optional measured per-spool overrides for temperature, volumetric flow, pressure advance, and flow ratio
-- Direct Flash Studio project generation
+- Direct verified 3MF generation and opening in the selected slicer
 
 ## Platform availability
 
-FlashFit AI is currently available as **Windows 11 x64 4.2.1 Stability Fix Beta** and **macOS Apple Silicon 3.6 Beta**.
+FlashFit AI is currently available as **Windows 11 x64 4.3 Multi-Printer Engineering Beta** and **macOS Apple Silicon 3.6 Beta**.
 
 ## Beta notice
 
@@ -44,7 +49,7 @@ ABS can warp and release fumes. Large ABS parts generally require an enclosure a
 1. Download `FlashFit-AI-Apple-Silicon.zip` using the macOS link above.
 2. Extract `FlashFit AI.app`.
 3. Move the app to the Applications folder.
-4. Open a model and verify the generated project in Flash Studio before printing.
+4. Open a model and verify the generated project in the selected slicer before printing.
 
 ### Windows 11
 
@@ -58,9 +63,9 @@ Designed and developed in Italy by one independent developer. 🇮🇹
 
 The project is intentionally small and personal. The application and its profile engine are maintained exclusively by its original developer; this public repository distributes compiled beta releases and public documentation only.
 
-## Windows 4.2 Spatial Engineering UI
+## Windows 4.3 Spatial Multi-Printer UI
 
-![FlashFit AI 4.2 Spatial UI running on Windows 11](docs/FlashFit-AI-Spatial-4.1-Windows.png)
+![FlashFit AI Spatial UI running on Windows 11](docs/FlashFit-AI-Spatial-4.1-Windows.png)
 
 <img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 56 24" src="https://github.com/user-attachments/assets/735e2d0e-5677-4f57-b83b-8d521991f046" />
 <img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 55 55" src="https://github.com/user-attachments/assets/53450b25-8192-40c9-bb5c-7928c4536b80" />

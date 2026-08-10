@@ -61,6 +61,7 @@ const (
 	idFilamentApply    = 4003
 	idFilamentClose    = 4004
 	idSpatialAnimation = 5101
+	idPrinterBase      = 6000
 
 	// The motion is intentionally restrained. A 30 fps full-window GDI repaint
 	// offered no visible benefit for a two-pixel float but could monopolize the
@@ -402,7 +403,7 @@ func drawDevicePill(hdc uintptr) {
 	drawSpatialSoftShadow(hdc, r, 25, 4, 2, rgb(64, 84, 140), 18)
 	drawSpatialRoundedMaterial(hdc, r, 25, rgb(255, 255, 255), rgb(246, 248, 253), rgb(228, 233, 243))
 	drawPrinterIcon(hdc, r.Left+36, (r.Top+r.Bottom)/2, rgb(70, 82, 110))
-	text(hdc, tr("device")+"   •   "+tr("nozzle"), rect{r.Left + 62, r.Top, r.Right - 45, r.Bottom}, hFontBody, rgb(35, 40, 53), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, selectedPrinterLabel()+"   •   "+tr("nozzle"), rect{r.Left + 62, r.Top, r.Right - 45, r.Bottom}, hFontBody, rgb(35, 40, 53), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	text(hdc, "⌄", rect{r.Right - 42, r.Top - 2, r.Right - 17, r.Bottom}, hFontHeading, rgb(49, 56, 73), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 }
 
@@ -738,7 +739,7 @@ func spatialClick(x, y int32) {
 	case contains(spatial.advanced, x, y):
 		showAdvancedMenu()
 	case contains(spatial.device, x, y):
-		startDiscovery()
+		showPrinterMenu()
 	case contains(spatial.preview, x, y), contains(spatial.model, x, y):
 		chooseAndSetModel()
 	case contains(spatial.filament, x, y):
@@ -753,6 +754,31 @@ func spatialClick(x, y int32) {
 		if app.ready {
 			startImport()
 		}
+	}
+}
+
+func showPrinterMenu() {
+	if len(app.printerChoices) == 0 {
+		startDiscovery()
+		return
+	}
+	items := make([]struct {
+		id    int
+		label string
+	}, 0, len(app.printerChoices))
+	for i, choice := range app.printerChoices {
+		label := choice.Label + "  •  0.4 mm"
+		if i == app.printerIndex {
+			label = "✓  " + label
+		}
+		items = append(items, struct {
+			id    int
+			label string
+		}{idPrinterBase + i, label})
+	}
+	cmd := popupCommand(items)
+	if cmd >= idPrinterBase && cmd < idPrinterBase+len(app.printerChoices) {
+		selectDiscoveredMachine(cmd - idPrinterBase)
 	}
 }
 
@@ -950,10 +976,10 @@ func pointFromLParam(lParam uintptr) (int32, int32) {
 func formatProfileState() string {
 	parts := []string{}
 	if app.slicer != "" {
-		parts = append(parts, "Flash Studio")
+		parts = append(parts, filepath.Base(app.slicer))
 	}
 	if app.machine != "" {
-		parts = append(parts, "AD5M")
+		parts = append(parts, selectedPrinterLabel())
 	}
 	if app.process != "" {
 		parts = append(parts, app.quality)
