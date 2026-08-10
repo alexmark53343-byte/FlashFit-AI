@@ -41,14 +41,28 @@ var perfectTextures = map[string]texturePreset{
 // Recommend preserves the public engine API and uses the smooth premium finish
 // when Perfect is requested without an explicit texture.
 func Recommend(a ModelAnalysis, f Filament, quality string) (Recommendation, error) {
-	return RecommendWithTexture(a, f, quality, "")
+	return RecommendForPrinterWithTexture(a, f, DefaultPrinterProfile(), quality, "")
 }
 
 func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) (Recommendation, error) {
+	return RecommendForPrinterWithTexture(a, f, DefaultPrinterProfile(), quality, texture)
+}
+
+func RecommendForPrinter(a ModelAnalysis, f Filament, printer PrinterProfile, quality string) (Recommendation, error) {
+	return RecommendForPrinterWithTexture(a, f, printer, quality, "")
+}
+
+func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer PrinterProfile, quality, texture string) (Recommendation, error) {
 	if err := ValidateAnalysis(a); err != nil {
 		return Recommendation{}, err
 	}
 	if err := ValidateFilament(f); err != nil {
+		return Recommendation{}, err
+	}
+	if strings.TrimSpace(printer.ID) == "" {
+		return Recommendation{}, errors.New("profilo stampante non risolto")
+	}
+	if err := ValidateModelForPrinter(a, printer); err != nil {
 		return Recommendation{}, err
 	}
 	p, ok := presets[quality]
@@ -61,6 +75,7 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	estimatedBalancedMinutes := EstimateBalancedMinutes(a, f)
 	durationClass := durationClassForMinutes(estimatedBalancedMinutes)
 	p = adaptPresetForDuration(p, quality, durationClass, a)
+	applyPrinterMotionGuardrails(&p, printer, a)
 
 	// A producer MVS is an upper bound, not a quality target. Every mode keeps a
 	// filament-aware margin and all requested speeds are volume-capped below it.
@@ -74,7 +89,7 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		safety -= 0.05
 	}
 	safeMVS := f.MaxVolumetricSpeed * safety
-	linearLimit := 300.0
+	linearLimit := math.Min(300, printer.MaxTravelSpeed)
 	if f.RecommendedSpeedMax > 0 {
 		linearLimit = math.Min(linearLimit, f.RecommendedSpeedMax)
 	}
@@ -112,11 +127,17 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		p.OuterAccel = math.Min(p.OuterAccel, 1350)
 	}
 
-	nozzle, bed := f.NozzleDefault, f.BedDefault
+	if f.NozzleDefault > printer.MaxNozzleTemperature {
+		return Recommendation{}, fmt.Errorf("%s richiede %.0f °C ma %s è limitata a %.0f °C", f.Product, f.NozzleDefault, printer.Model, printer.MaxNozzleTemperature)
+	}
+	if f.BedDefault > printer.MaxBedTemperature {
+		return Recommendation{}, fmt.Errorf("%s richiede piano a %.0f °C ma %s è limitata a %.0f °C", f.Product, f.BedDefault, printer.Model, printer.MaxBedTemperature)
+	}
+	nozzle, bed := math.Min(f.NozzleDefault, printer.MaxNozzleTemperature), math.Min(f.BedDefault, printer.MaxBedTemperature)
 	// High-flow modes need a small, documented temperature margin. Never exceed
 	// the TDS range and do not heat short prints just to save a negligible time.
 	if quality == "low" && durationClass != "short" {
-		nozzle = math.Min(f.NozzleMax, nozzle+5)
+		nozzle = math.Min(printer.MaxNozzleTemperature, math.Min(f.NozzleMax, nozzle+5))
 	}
 	flow := f.FlowRatio
 	if flow == 0 {
@@ -162,7 +183,7 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		"support_speed": fmt0(supportSpeed), "support_interface_speed": fmt0(supportInterfaceSpeed), "initial_layer_speed": fmt0(initialSpeed), "initial_layer_infill_speed": fmt0(initialSpeed + 5),
 		"outer_wall_acceleration": fmt0(p.OuterAccel), "inner_wall_acceleration": fmt0(p.InnerAccel), "sparse_infill_acceleration": fmt0(p.InnerAccel),
 		"internal_solid_infill_acceleration": fmt0(p.TopAccel), "top_surface_acceleration": fmt0(p.TopAccel), "bridge_acceleration": fmt0(p.OuterAccel), "initial_layer_acceleration": "500",
-		"travel_acceleration": "5000", "travel_speed": "350", "bridge_flow": fmt2(bridgeFlow),
+		"travel_acceleration": fmt0(math.Min(5000, printer.MaxAcceleration*0.45)), "travel_speed": fmt0(math.Min(350, printer.MaxTravelSpeed*0.75)), "bridge_flow": fmt2(bridgeFlow),
 		"avoid_crossing_wall": "1", "reduce_infill_retraction": "0", "overhang_1_4_speed": "0", "overhang_2_4_speed": fmt0(math.Min(outer, 42)), "overhang_3_4_speed": fmt0(math.Min(bridge+8, 34)), "overhang_4_4_speed": fmt0(math.Min(bridge, 24)),
 		"enable_support": bool01(a.SupportSuggested), "support_type": supportType(a), "support_threshold_angle": "45", "brim_type": brimType(a), "brim_width": brimWidth(a),
 		"ironing_type": "no ironing", "ironing_pattern": "rectilinear", "ironing_flow": "10%", "ironing_spacing": "0.1", "ironing_inset": "0.12", "ironing_speed": "24",
@@ -218,9 +239,9 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	}
 	fil := map[string]any{
 		"filament_density": fmt2(f.Density), "filament_flow_ratio": fmt3(flow), "filament_max_volumetric_speed": fmt2(safeMVS),
-		"nozzle_temperature": fmt0(nozzle), "nozzle_temperature_initial_layer": fmt0(math.Min(f.NozzleMax, nozzle+5)),
-		"hot_plate_temp": fmt0(bed), "hot_plate_temp_initial_layer": fmt0(math.Min(f.BedMax, bed+5)),
-		"textured_plate_temp": fmt0(bed), "textured_plate_temp_initial_layer": fmt0(math.Min(f.BedMax, bed+5)),
+		"nozzle_temperature": fmt0(nozzle), "nozzle_temperature_initial_layer": fmt0(math.Min(printer.MaxNozzleTemperature, math.Min(f.NozzleMax, nozzle+5))),
+		"hot_plate_temp": fmt0(bed), "hot_plate_temp_initial_layer": fmt0(math.Min(printer.MaxBedTemperature, math.Min(f.BedMax, bed+5))),
+		"textured_plate_temp": fmt0(bed), "textured_plate_temp_initial_layer": fmt0(math.Min(printer.MaxBedTemperature, math.Min(f.BedMax, bed+5))),
 		"fan_min_speed": fmt0(f.FanMin), "fan_max_speed": fmt0(f.FanMax),
 		"close_fan_the_first_x_layers": fmt.Sprintf("%d", closedFanLayers), "full_fan_speed_layer": fmt.Sprintf("%d", fullFanLayer),
 		"slow_down_for_layer_cooling": "1", "slow_down_layer_time": fmt.Sprintf("%d", slowLayerTime), "min_print_speed": fmt.Sprintf("%d", minPrintSpeed),
@@ -228,11 +249,10 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	if f.PressureAdvance != nil {
 		fil["enable_pressure_advance"] = "1"
 		fil["pressure_advance"] = fmt3(*f.PressureAdvance)
-	} else {
-		fil["enable_pressure_advance"] = "0"
 	}
 
 	reasons := []string{
+		fmt.Sprintf("Profilo macchina %s %s verificato; G-code, cinematica, retrazione e calibrazioni vendor restano invariati.", printer.Brand, printer.Model),
 		fmt.Sprintf("Parete esterna limitata a %.0f mm/s per ridurre ghosting e artefatti.", outer),
 		fmt.Sprintf("Portata limitata al %.0f%% della MVS dichiarata: %.1f su %.1f mm³/s.", safety*100, safeMVS, f.MaxVolumetricSpeed),
 		fmt.Sprintf("%d pareti, guscio superiore minimo %.1f mm e infill gyroid al %d%% per una resistenza equilibrata.", p.Walls, topThickness, p.InfillPct),
@@ -254,6 +274,19 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 	if a.BrimSuggested {
 		reasons = append(reasons, "Brim da 5 mm attivato per impronta piccola o modello alto.")
 	}
+	warnings := append([]string(nil), a.Warnings...)
+	if printer.PLAEnclosureHeatRisk && strings.HasPrefix(m, "PLA") {
+		warnings = append(warnings, "Su questa stampante chiusa il PLA può soffrire heat-creep nelle stampe lunghe: usa la ventilazione/apertura prevista dal manuale e controlla la temperatura camera.")
+	}
+	if printer.Motion == "bedslinger" && a.ThinOrTall {
+		warnings = append(warnings, "Modello alto su bed-slinger: accelerazioni esterne ridotte per limitare oscillazioni, ringing e distacco dal piano.")
+	}
+	if printer.PreserveToolchange {
+		reasons = append(reasons, "Cambio utensile/filamento, spurgo, wipe e torre di pulizia restano quelli del profilo ufficiale installato.")
+	}
+	if f.PressureAdvance == nil {
+		reasons = append(reasons, "Flow Dynamics/Pressure Advance non viene sovrascritto: resta il valore calibrato nello slicer o sulla stampante.")
+	}
 	critical := map[string]float64{
 		"layer_height": p.Layer, "outer_wall_speed": outer, "inner_wall_speed": inner, "infill_speed": infill, "bridge_speed": bridge,
 		"outer_acceleration": p.OuterAccel, "max_volumetric_speed": safeMVS, "nozzle_temperature": nozzle, "bed_temperature": bed,
@@ -264,12 +297,42 @@ func RecommendWithTexture(a ModelAnalysis, f Filament, quality, texture string) 
 		"ironing_type": fmt.Sprint(process["ironing_type"]), "fuzzy_skin": fmt.Sprint(process["fuzzy_skin"]),
 	}
 	return Recommendation{
+		PrinterID: printer.ID, PrinterLabel: printer.Brand + " " + printer.Model,
 		Quality: quality, QualityLabel: p.Label, Texture: textureID, TextureLabel: textureLabel,
-		Process: process, Filament: fil, Reasons: reasons, Warnings: a.Warnings,
+		Process: process, Filament: fil, Reasons: reasons, Warnings: warnings,
 		EstimatedRelativeTime: relativeTime, EstimatedBalancedMinutes: estimatedBalancedMinutes,
 		EstimatedModeMinutes: estimatedBalancedMinutes * relativeTime, DurationClass: durationClass,
 		CriticalValues: critical, CriticalSettings: criticalSettings,
 	}, nil
+}
+
+func applyPrinterMotionGuardrails(p *qualityPreset, printer PrinterProfile, a ModelAnalysis) {
+	if p == nil {
+		return
+	}
+	p.OuterAccel = math.Min(p.OuterAccel, printer.MaxAcceleration*0.18)
+	p.InnerAccel = math.Min(p.InnerAccel, printer.MaxAcceleration*0.32)
+	p.TopAccel = math.Min(p.TopAccel, printer.MaxAcceleration*0.14)
+	if printer.Motion == "bedslinger" {
+		p.OuterAccel = math.Min(p.OuterAccel, 1500)
+		p.InnerAccel = math.Min(p.InnerAccel, 2800)
+		p.TopAccel = math.Min(p.TopAccel, 1100)
+		p.Outer = math.Min(p.Outer, 65)
+		p.Inner = math.Min(p.Inner, 95)
+		if a.ThinOrTall || a.Extents[2] > printer.BuildVolume[2]*0.55 {
+			p.OuterAccel = math.Min(p.OuterAccel, 750)
+			p.InnerAccel = math.Min(p.InnerAccel, 1400)
+			p.TopAccel = math.Min(p.TopAccel, 650)
+			p.Outer = math.Min(p.Outer, 42)
+			p.Inner = math.Min(p.Inner, 58)
+		}
+	}
+	if printer.BuildVolume[2] >= 500 && (a.ThinOrTall || a.Extents[2] > 250) {
+		p.OuterAccel = math.Min(p.OuterAccel, 800)
+		p.InnerAccel = math.Min(p.InnerAccel, 1500)
+		p.TopAccel = math.Min(p.TopAccel, 700)
+		p.Outer = math.Min(p.Outer, 42)
+	}
 }
 
 // EstimateBalancedMinutes is a conservative geometry estimate used only to
