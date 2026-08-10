@@ -1,0 +1,78 @@
+name: Build signed Windows candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Versione candidata, senza prefisso v
+        required: true
+        default: 4.2.1-spatial-engineering-beta
+
+permissions:
+  contents: read
+
+jobs:
+  signed-candidate:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Test
+        shell: pwsh
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { throw "Go tests failed." }
+
+      - name: Build deterministic Windows executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $version = '${{ inputs.version }}'
+          $numericMatch = [regex]::Match($version, '^(\d+)\.(\d+)\.(\d+)')
+          if (-not $numericMatch.Success) { throw "Version must begin with major.minor.patch." }
+          $numericVersion = "$($numericMatch.Groups[1].Value).$($numericMatch.Groups[2].Value).$($numericMatch.Groups[3].Value).0"
+          go install github.com/tc-hib/go-winres@v0.3.3
+          if ($LASTEXITCODE -ne 0) { throw "Windows resource tool installation failed." }
+          Push-Location appnative
+          try {
+            go-winres make --file-version=$numericVersion --product-version=$numericVersion
+            if ($LASTEXITCODE -ne 0) { throw "Windows resources generation failed." }
+          } finally {
+            Pop-Location
+          }
+          go build -buildvcs=false -trimpath -ldflags="-s -w -H=windowsgui -X main.buildVersion=$version" -o dist/FlashFit-AI-Windows-11.exe ./appnative
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
+
+      - name: Exercise UI responsiveness and GDI lifetime
+        shell: pwsh
+        run: |
+          ./build/windows/test-ui-responsiveness.ps1 -Executable dist/FlashFit-AI-Windows-11.exe
+
+      - name: Authenticode sign, timestamp, verify and package
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          ./build/windows/sign-release.ps1 `
+            -Executable dist/FlashFit-AI-Windows-11.exe `
+            -OutputDirectory dist/release `
+            -Version '${{ inputs.version }}'
+
+      - name: Upload signed candidate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashFit-AI-Windows-11-x64-signed-${{ inputs.version }}
+          path: |
+            dist/release/FlashFit-AI-Windows-11-x64.zip
+            dist/release/SHA256SUMS.txt
+            dist/release/signature.json
+          if-no-files-found: error
+          retention-days: 7

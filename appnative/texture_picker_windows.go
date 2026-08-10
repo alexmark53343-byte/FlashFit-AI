@@ -40,6 +40,7 @@ var (
 	textureDraft           = "satin"
 	textureLayout          texturePickerLayout
 	textureAnimationTick   uint32
+	texturePickerBuffer    windowBackBuffer
 	pGetWindowRect         = user32.NewProc("GetWindowRect")
 )
 
@@ -139,7 +140,7 @@ func textureWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (re
 	switch message {
 	case WM_CREATE:
 		hTexturePicker = hwnd
-		pSetTimer.Call(hwnd, idTextureAnimation, 33, 0)
+		pSetTimer.Call(hwnd, idTextureAnimation, spatialAnimationInterval, 0)
 		return 0
 	case WM_PAINT:
 		paintTexturePicker(hwnd)
@@ -147,7 +148,8 @@ func textureWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (re
 	case WM_ERASEBKGND:
 		return 1
 	case WM_TIMER:
-		if wParam == idTextureAnimation {
+		foreground, _, _ := pGetForegroundWindow.Call()
+		if wParam == idTextureAnimation && foreground == hwnd {
 			textureAnimationTick++
 			pInvalidateRect.Call(hwnd, 0, 0)
 		}
@@ -170,6 +172,7 @@ func textureWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (re
 		return 0
 	case WM_DESTROY:
 		pKillTimer.Call(hwnd, idTextureAnimation)
+		texturePickerBuffer.reset()
 		hTexturePicker = 0
 		if mainHwnd != 0 {
 			pEnableWindow.Call(mainHwnd, 1)
@@ -208,18 +211,12 @@ func paintTexturePicker(hwnd uintptr) {
 	if w <= 0 || h <= 0 {
 		return
 	}
-	bufferDC, _, _ := pCreateCompatibleDC.Call(hdc)
-	bufferBitmap, _, _ := pCreateCompatibleBitmap.Call(hdc, uintptr(w), uintptr(h))
-	if bufferDC == 0 || bufferBitmap == 0 {
+	if !texturePickerBuffer.ensure(hdc, w, h) {
 		drawTexturePickerScene(hdc, client)
 		return
 	}
-	oldBitmap, _, _ := pSelectObject.Call(bufferDC, bufferBitmap)
-	drawTexturePickerScene(bufferDC, client)
-	pBitBlt.Call(hdc, 0, 0, uintptr(w), uintptr(h), bufferDC, 0, 0, SRCCOPY)
-	pSelectObject.Call(bufferDC, oldBitmap)
-	pDeleteObject.Call(bufferBitmap)
-	pDeleteDC.Call(bufferDC)
+	drawTexturePickerScene(texturePickerBuffer.dc, client)
+	pBitBlt.Call(hdc, 0, 0, uintptr(w), uintptr(h), texturePickerBuffer.dc, 0, 0, SRCCOPY)
 }
 
 func drawTexturePickerScene(hdc uintptr, client rect) {
