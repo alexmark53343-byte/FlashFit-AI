@@ -121,7 +121,7 @@ func likelyProfileRoots() []string {
 	for _, env := range []string{"APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"} {
 		if v := os.Getenv(env); v != "" {
 			roots = append(roots,
-				filepath.Join(v, "FlashForge"), filepath.Join(v, "Flashforge"), filepath.Join(v, "Flash Studio"), filepath.Join(v, "Orca-Flashforge"), filepath.Join(v, "OrcaSlicer"))
+				filepath.Join(v, "FlashForge"), filepath.Join(v, "Flashforge"), filepath.Join(v, "Flash Studio"), filepath.Join(v, "Orca-Flashforge"), filepath.Join(v, "Bambu Studio"), filepath.Join(v, "BambuStudio"), filepath.Join(v, "OrcaSlicer"))
 		}
 	}
 	return roots

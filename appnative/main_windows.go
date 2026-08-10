@@ -22,7 +22,7 @@ import (
 )
 
 var (
-	buildVersion = "4.2.1-spatial-engineering-beta"
+	buildVersion = "4.3.0-multi-printer-engineering-beta"
 	appTitle     = "FlashFit AI Spatial " + buildVersion
 )
 
@@ -243,6 +243,9 @@ type appState struct {
 	profileMeta        map[string]profileMeta
 	processChoices     map[string]string
 	baseChoices        map[string]string
+	printerChoices     []shared.DiscoveredMachine
+	printerIndex       int
+	printer            shared.PrinterProfile
 	filamentMatchTotal int
 	ready              bool
 	statusKey          string
@@ -362,8 +365,11 @@ func runDiscoveryWorker(outputPath string) int {
 		}
 	}
 	result.MergedFilaments = mergeFilaments(base, result.Official)
+	printer, printerErr := shared.ResolvePrinterProfile(result.Discovery.Machine)
 	for _, quality := range []string{"low", "balanced", "perfect"} {
-		result.ProcessChoices[quality] = chooseProcess(result.Discovery.Processes, quality, result.ProfileMeta)
+		if printerErr == nil {
+			result.ProcessChoices[quality] = chooseProcessForPrinter(result.Discovery.Processes, quality, printer, result.ProfileMeta)
+		}
 	}
 	for _, material := range []string{"PLA", "PETG", "ABS", "TPU"} {
 		result.BaseChoices[material] = chooseBaseFilament(result.Discovery.Filaments, shared.Filament{Material: material}, result.ProfileMeta)
@@ -420,7 +426,7 @@ func main() {
 }
 
 func acquireSingleInstance() bool {
-	name := utf16Ptr("Local\\FlashFitAI-4.2-Spatial-SingleInstance")
+	name := utf16Ptr("Local\\FlashFitAI-Spatial-SingleInstance")
 	h, _, e := pCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	mutexHandle = h
 	if errno, ok := e.(syscall.Errno); ok && errno == ERROR_ALREADY_EXISTS {
@@ -454,7 +460,7 @@ func runGUI() error {
 	if atom == 0 {
 		return fmt.Errorf("impossibile registrare la finestra Win32: %v", err)
 	}
-	title := utf16Ptr(appTitle + " • Adventurer 5M")
+	title := utf16Ptr(appTitle)
 	style := uintptr(WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN)
 	if !smokeMode {
 		style |= WS_VISIBLE
@@ -787,17 +793,51 @@ func finishDiscovery() {
 	processChoices := pending.processChoices
 	baseChoices := pending.baseChoices
 	pending.mu.Unlock()
+	previousPrinterID := app.printer.ID
 	app.discovering = false
 	enable(hDetect, true)
 	app.profiles = d
 	app.profileMeta = meta
 	app.processChoices = processChoices
 	app.baseChoices = baseChoices
+	app.printerChoices = append([]shared.DiscoveredMachine(nil), d.Machines...)
+	app.printerIndex = -1
 	if !app.manualSlicer {
 		app.slicer = d.SlicerExe
 	}
 	if !app.manualMachine {
 		app.machine = d.Machine
+		if printer, err := shared.ResolvePrinterProfile(d.Machine); err == nil {
+			app.printer = printer
+		}
+		if previousPrinterID != "" && previousPrinterID != app.printer.ID {
+			for i, choice := range app.printerChoices {
+				if choice.PrinterID == previousPrinterID {
+					app.machine = choice.Path
+					app.printerIndex = i
+					if printer, err := shared.ResolvePrinterProfile(choice.Path); err == nil {
+						app.printer = printer
+						app.processChoices = make(map[string]string, 3)
+						for _, quality := range []string{"low", "balanced", "perfect"} {
+							app.processChoices[quality] = chooseProcessForPrinter(d.Processes, quality, printer, meta)
+						}
+					}
+					if !app.manualSlicer && choice.SlicerExe != "" {
+						app.slicer = choice.SlicerExe
+					}
+					break
+				}
+			}
+		}
+		for i, choice := range app.printerChoices {
+			if filepath.Clean(choice.Path) == filepath.Clean(d.Machine) {
+				app.printerIndex = i
+				if !app.manualSlicer && choice.SlicerExe != "" {
+					app.slicer = choice.SlicerExe
+				}
+				break
+			}
+		}
 	}
 	if len(merged) > 0 {
 		app.filaments = merged
@@ -1070,12 +1110,18 @@ func renderAnalysis() {
 	status := "VALIDO"
 	if e := shared.ValidateAnalysis(a); e != nil {
 		status = "BLOCCATO: " + e.Error()
+	} else if printer, ok := selectedPrinter(); ok {
+		if e := shared.ValidateModelForPrinter(a, printer); e != nil {
+			status = "BLOCCATO: " + e.Error()
+		}
 	}
 	lines := []string{fmt.Sprintf("Modello: %s", a.Filename), fmt.Sprintf("Formato: %s • Oggetti/istanze: %d • Geometria ripulita: %t", a.InputFormat, a.ObjectCount, a.Sanitized), fmt.Sprintf("Stato: %s", status), fmt.Sprintf("Dimensioni: %.2f × %.2f × %.2f mm", a.Extents[0], a.Extents[1], a.Extents[2]), fmt.Sprintf("Triangoli: %d • Categoria: %s", a.TriangleCount, a.Category), fmt.Sprintf("Mesh chiusa: %t • Facce degeneri: %d", a.Watertight, a.DegenerateFaces), fmt.Sprintf("Sbalzi stimati: %.1f%% • Supporti: %t • Brim: %t", a.OverhangRatio*100, a.SupportSuggested, a.BrimSuggested)}
 	if f, ok := selectedFilament(); ok {
-		if r, e := shared.RecommendWithTexture(a, f, app.quality, app.texture); e == nil {
-			c := r.CriticalValues
-			lines = append(lines, "", "LIMITI FLASHFIT", fmt.Sprintf("Layer %.2f mm • Parete esterna %.0f mm/s • Interna %.0f mm/s", c["layer_height"], c["outer_wall_speed"], c["inner_wall_speed"]), fmt.Sprintf("Infill %.0f mm/s • Ponti %.0f mm/s • Accelerazione esterna %.0f mm/s²", c["infill_speed"], c["bridge_speed"], c["outer_acceleration"]), fmt.Sprintf("MVS %.1f mm³/s • Ugello %.0f °C • Piano %.0f °C", c["max_volumetric_speed"], c["nozzle_temperature"], c["bed_temperature"]), "", strings.Join(r.Reasons, "\r\n"))
+		if printer, printerOK := selectedPrinter(); printerOK {
+			if r, e := shared.RecommendForPrinterWithTexture(a, f, printer, app.quality, app.texture); e == nil {
+				c := r.CriticalValues
+				lines = append(lines, "", "LIMITI FLASHFIT", fmt.Sprintf("Layer %.2f mm • Parete esterna %.0f mm/s • Interna %.0f mm/s", c["layer_height"], c["outer_wall_speed"], c["inner_wall_speed"]), fmt.Sprintf("Infill %.0f mm/s • Ponti %.0f mm/s • Accelerazione esterna %.0f mm/s²", c["infill_speed"], c["bridge_speed"], c["outer_acceleration"]), fmt.Sprintf("MVS %.1f mm³/s • Ugello %.0f °C • Piano %.0f °C", c["max_volumetric_speed"], c["nozzle_temperature"], c["bed_temperature"]), "", strings.Join(r.Reasons, "\r\n"))
+			}
 		}
 	}
 	if len(a.Warnings) > 0 {
@@ -1101,6 +1147,57 @@ func autoSelectProfiles() {
 		}
 	}
 }
+
+func selectedPrinter() (shared.PrinterProfile, bool) {
+	if strings.TrimSpace(app.printer.ID) != "" {
+		return app.printer, true
+	}
+	if strings.TrimSpace(app.machine) == "" {
+		return shared.PrinterProfile{}, false
+	}
+	printer, err := shared.ResolvePrinterProfile(app.machine)
+	if err == nil {
+		app.printer = printer
+	}
+	return printer, err == nil
+}
+
+func selectedPrinterLabel() string {
+	if printer, ok := selectedPrinter(); ok {
+		return printer.Brand + " " + printer.Model
+	}
+	return tr("device")
+}
+
+func selectDiscoveredMachine(index int) {
+	if app.importing || index < 0 || index >= len(app.printerChoices) {
+		return
+	}
+	choice := app.printerChoices[index]
+	printer, err := shared.ResolvePrinterProfile(choice.Path)
+	if err != nil {
+		messageBox(mainHwnd, localizeEngineText(err.Error()), tr("profilesMissing"), MB_OK|MB_ICONERROR)
+		return
+	}
+	app.printerIndex = index
+	app.machine = choice.Path
+	app.printer = printer
+	app.manualMachine = false
+	if !app.manualSlicer && choice.SlicerExe != "" {
+		app.slicer = choice.SlicerExe
+	}
+	app.processChoices = make(map[string]string, 3)
+	for _, quality := range []string{"low", "balanced", "perfect"} {
+		app.processChoices[quality] = chooseProcessForPrinter(app.profiles.Processes, quality, printer, app.profileMeta)
+	}
+	app.manualProcess = false
+	autoSelectProfiles()
+	renderAnalysis()
+	renderProfiles()
+	refreshReady()
+	setStatusKey("statusPrinterSelected", choice.Label)
+	invalidateSpatial()
+}
 func renderProfiles() {
 	invalidateSpatial()
 }
@@ -1118,6 +1215,11 @@ func configureProfilesManually() {
 	if p := chooseFile(tr("chooseMachine"), tr("jsonProfiles")+" (*.json)\x00*.json\x00\x00", "json"); p != "" {
 		app.machine = p
 		app.manualMachine = true
+		if printer, err := shared.ResolvePrinterProfile(p); err == nil {
+			app.printer = printer
+		} else {
+			app.printer = shared.PrinterProfile{}
+		}
 	}
 	if p := chooseFile(tr("chooseProcess"), tr("jsonProfiles")+" (*.json)\x00*.json\x00\x00", "json"); p != "" {
 		app.process = p
@@ -1133,6 +1235,12 @@ func configureProfilesManually() {
 
 func refreshReady() {
 	ready := !app.importing && !app.analyzing && app.analysis != nil && shared.ValidateAnalysis(*app.analysis) == nil && app.slicer != "" && app.machine != "" && app.process != "" && app.baseFilament != ""
+	if ready {
+		printer, ok := selectedPrinter()
+		if !ok || shared.ValidateModelForPrinter(*app.analysis, printer) != nil {
+			ready = false
+		}
+	}
 	if _, ok := selectedFilament(); !ok {
 		ready = false
 	}

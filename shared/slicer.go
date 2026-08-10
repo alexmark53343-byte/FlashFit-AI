@@ -22,11 +22,22 @@ import (
 )
 
 type DiscoveredProfiles struct {
-	SlicerExe string   `json:"slicer_exe"`
-	Machine   string   `json:"machine_profile"`
-	Processes []string `json:"process_profiles"`
-	Filaments []string `json:"filament_profiles"`
-	Notes     []string `json:"notes"`
+	SlicerExe string              `json:"slicer_exe"`
+	Machine   string              `json:"machine_profile"`
+	Machines  []DiscoveredMachine `json:"machine_profiles"`
+	Processes []string            `json:"process_profiles"`
+	Filaments []string            `json:"filament_profiles"`
+	Notes     []string            `json:"notes"`
+}
+
+type DiscoveredMachine struct {
+	Path      string  `json:"path"`
+	PrinterID string  `json:"printer_id"`
+	Brand     string  `json:"brand"`
+	Model     string  `json:"model"`
+	Label     string  `json:"label"`
+	NozzleMM  float64 `json:"nozzle_mm"`
+	SlicerExe string  `json:"slicer_exe"`
 }
 
 type ImportRequest struct {
@@ -51,16 +62,25 @@ type ImportResult struct {
 
 func DiscoverProfiles() DiscoveredProfiles {
 	var d DiscoveredProfiles
+	executables := map[string]string{}
 	for _, p := range possibleSlicerPaths() {
 		if fileExists(p) {
-			d.SlicerExe = p
-			break
+			kind := slicerKind(p)
+			if executables[kind] == "" {
+				executables[kind] = p
+			}
+			if d.SlicerExe == "" {
+				d.SlicerExe = p
+			}
 		}
 	}
 	if d.SlicerExe == "" {
 		d.SlicerExe = discoverSlicerExecutable()
+		if d.SlicerExe != "" {
+			executables[slicerKind(d.SlicerExe)] = d.SlicerExe
+		}
 	}
-	seenP, seenF := map[string]bool{}, map[string]bool{}
+	seenM, seenP, seenF := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, root := range likelyProfileRoots() {
 		st, err := os.Stat(root)
 		if err != nil || !st.IsDir() {
@@ -89,16 +109,23 @@ func DiscoverProfiles() DiscoveredProfiles {
 				return nil
 			}
 			typ := strings.ToLower(mapText(m, "type"))
-			name := strings.ToLower(mapText(m, "name") + " " + mapText(m, "printer_model") + " " + mapText(m, "inherits"))
 			switch typ {
 			case "machine", "printer":
-				if strings.Contains(name, "adventurer 5m") || strings.Contains(name, "ad5m") {
-					if d.Machine == "" {
-						d.Machine = path
+				printer, matchErr := resolvePrinterMap(m)
+				if matchErr == nil && !seenM[printer.ID] {
+					seenM[printer.ID] = true
+					kind := "flash"
+					if strings.EqualFold(printer.Brand, "Bambu Lab") {
+						kind = "bambu"
 					}
+					exe := executables[kind]
+					if exe == "" && slicerKind(d.SlicerExe) == kind {
+						exe = d.SlicerExe
+					}
+					d.Machines = append(d.Machines, DiscoveredMachine{Path: path, PrinterID: printer.ID, Brand: printer.Brand, Model: printer.Model, Label: printer.Brand + " " + printer.Model, NozzleMM: printer.NozzleDiameter, SlicerExe: exe})
 				}
 			case "process":
-				if profileMentionsAD5M(m) {
+				if profileMentionsSupportedPrinter(m) {
 					if !seenP[path] {
 						seenP[path] = true
 						d.Processes = append(d.Processes, path)
@@ -116,16 +143,33 @@ func DiscoverProfiles() DiscoveredProfiles {
 			return nil
 		})
 	}
+	sort.SliceStable(d.Machines, func(i, j int) bool {
+		if d.Machines[i].Brand != d.Machines[j].Brand {
+			return d.Machines[i].Brand < d.Machines[j].Brand
+		}
+		return d.Machines[i].Model < d.Machines[j].Model
+	})
+	for _, machine := range d.Machines {
+		if d.Machine == "" || machine.PrinterID == "flashforge-adventurer-5m" {
+			d.Machine = machine.Path
+			if machine.SlicerExe != "" {
+				d.SlicerExe = machine.SlicerExe
+			}
+			if machine.PrinterID == "flashforge-adventurer-5m" {
+				break
+			}
+		}
+	}
 	sort.Strings(d.Processes)
 	sort.Strings(d.Filaments)
 	if d.SlicerExe == "" {
-		d.Notes = append(d.Notes, "Flash Studio non rilevato automaticamente.")
+		d.Notes = append(d.Notes, "Flash Studio Desktop o Bambu Studio non rilevato automaticamente.")
 	}
 	if d.Machine == "" {
-		d.Notes = append(d.Notes, "Profilo macchina AD5M 0.4 non rilevato.")
+		d.Notes = append(d.Notes, "Nessun profilo macchina Flashforge/Bambu Lab 0.4 supportato rilevato.")
 	}
 	if len(d.Processes) == 0 {
-		d.Notes = append(d.Notes, "Nessun profilo processo AD5M ufficiale trovato.")
+		d.Notes = append(d.Notes, "Nessun profilo processo compatibile ufficiale trovato.")
 	}
 	return d
 }
@@ -143,7 +187,12 @@ func possibleSlicerPaths() []string {
 				filepath.Join("FlashForge", "Orca-Flashforge", "orca-flashforge.exe"),
 				filepath.Join("Programs", "Flash Studio", "Flash Studio.exe"),
 				filepath.Join("Programs", "Flash Studio Desktop", "Flash Studio Desktop.exe"),
-				filepath.Join("OrcaSlicer", "orca-slicer.exe")} {
+				filepath.Join("Bambu Studio", "bambu-studio.exe"),
+				filepath.Join("BambuStudio", "bambu-studio.exe"),
+				filepath.Join("Programs", "Bambu Studio", "bambu-studio.exe"),
+				filepath.Join("Programs", "BambuStudio", "bambu-studio.exe"),
+				filepath.Join("OrcaSlicer", "orca-slicer.exe"),
+				filepath.Join("Programs", "OrcaSlicer", "orca-slicer.exe")} {
 				out = append(out, filepath.Join(base, s))
 			}
 		}
@@ -154,11 +203,11 @@ func discoverSlicerExecutable() string {
 	var roots []string
 	for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)"} {
 		if base := os.Getenv(env); base != "" {
-			roots = append(roots, filepath.Join(base, "FlashForge"), filepath.Join(base, "Flashforge"))
+			roots = append(roots, filepath.Join(base, "FlashForge"), filepath.Join(base, "Flashforge"), filepath.Join(base, "Bambu Studio"), filepath.Join(base, "BambuStudio"), filepath.Join(base, "OrcaSlicer"))
 		}
 	}
 	if base := os.Getenv("LOCALAPPDATA"); base != "" {
-		roots = append(roots, filepath.Join(base, "Programs", "FlashForge"), filepath.Join(base, "Programs", "Flashforge"), filepath.Join(base, "Programs", "Flash Studio"), filepath.Join(base, "Programs", "Flash Studio Desktop"), filepath.Join(base, "FlashForge"))
+		roots = append(roots, filepath.Join(base, "Programs", "FlashForge"), filepath.Join(base, "Programs", "Flashforge"), filepath.Join(base, "Programs", "Flash Studio"), filepath.Join(base, "Programs", "Flash Studio Desktop"), filepath.Join(base, "FlashForge"), filepath.Join(base, "Programs", "Bambu Studio"), filepath.Join(base, "BambuStudio"), filepath.Join(base, "OrcaSlicer"))
 	}
 	var candidates []string
 	visited := 0
@@ -186,7 +235,7 @@ func discoverSlicerExecutable() string {
 				return nil
 			}
 			n := strings.ToLower(strings.ReplaceAll(d.Name(), "_", "-"))
-			if strings.Contains(n, "flash studio") || strings.Contains(n, "flashstudio") || strings.Contains(n, "orca-flashforge") {
+			if strings.Contains(n, "flash studio") || strings.Contains(n, "flashstudio") || strings.Contains(n, "orca-flashforge") || strings.Contains(n, "bambu-studio") || strings.Contains(n, "bambustudio") || strings.Contains(n, "orca-slicer") {
 				candidates = append(candidates, path)
 			}
 			return nil
@@ -204,6 +253,9 @@ func discoverSlicerExecutable() string {
 			}
 			if strings.Contains(n, "orca-flashforge") {
 				v += 10
+			}
+			if strings.Contains(n, "bambu-studio") || strings.Contains(n, "bambustudio") {
+				v += 20
 			}
 			if strings.Contains(n, "uninstall") || strings.Contains(n, "update") {
 				v -= 50
@@ -232,10 +284,21 @@ func readJSONMap(path string) (map[string]any, error) {
 	return m, e
 }
 func mapText(m map[string]any, key string) string { return scalar(m[key]) }
-func profileMentionsAD5M(m map[string]any) bool {
+func profileMentionsSupportedPrinter(m map[string]any) bool {
 	b, _ := json.Marshal(m)
-	s := strings.ToLower(string(b))
-	return strings.Contains(s, "adventurer 5m") || strings.Contains(s, "ad5m")
+	_, ok := MatchPrinterText(string(b))
+	return ok
+}
+
+func slicerKind(path string) string {
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, "bambu") {
+		return "bambu"
+	}
+	if strings.Contains(lower, "flash") || strings.Contains(lower, "orca-flashforge") {
+		return "flash"
+	}
+	return "orca"
 }
 
 var processPatchKeys = map[string]bool{
@@ -262,11 +325,11 @@ func ValidateSlicerExe(path string) error {
 		return nil
 	}
 	if !fileExists(path) || strings.ToLower(filepath.Ext(path)) != ".exe" {
-		return errors.New("eseguibile Flash Studio non valido")
+		return errors.New("eseguibile slicer non valido")
 	}
 	n := strings.ToLower(filepath.Base(path))
-	if !strings.Contains(n, "flash") && !strings.Contains(n, "orca") {
-		return errors.New("l'eseguibile non sembra Flash Studio/Orca")
+	if !strings.Contains(n, "flash") && !strings.Contains(n, "orca") && !strings.Contains(n, "bambu") {
+		return errors.New("l'eseguibile non sembra Flash Studio/Bambu Studio/Orca")
 	}
 	return nil
 }
@@ -300,7 +363,7 @@ func ProbeSlicerCLI(path string) error {
 			continue
 		}
 	}
-	return fmt.Errorf("l'eseguibile rilevato non espone la CLI Orca necessaria. Potrebbe essere soltanto il launcher di Flash Studio. Seleziona manualmente l'eseguibile del motore Orca/Flash Studio. Output: %s", tail(strings.TrimSpace(combined), 500))
+	return fmt.Errorf("l'eseguibile rilevato non espone la CLI Orca necessaria. Potrebbe essere soltanto un launcher. Seleziona manualmente il motore Flash Studio/Bambu Studio/Orca. Output: %s", tail(strings.TrimSpace(combined), 500))
 }
 
 func executableContainsCLIFlags(path string) bool {
@@ -390,21 +453,10 @@ func standaloneArrangeValueBug(stdout, stderr string) bool {
 }
 
 func ValidateMachineProfile(path string) error {
-	m, e := readJSONMap(path)
-	if e != nil {
-		return fmt.Errorf("profilo macchina illeggibile: %w", e)
-	}
-	b, _ := json.Marshal(m)
-	s := strings.ToLower(string(b))
-	if !strings.Contains(s, "adventurer 5m") && !strings.Contains(s, "ad5m") {
-		return errors.New("profilo macchina non AD5M")
-	}
-	if nd := scalar(m["nozzle_diameter"]); nd != "" && !strings.Contains(nd, "0.4") {
-		return errors.New("profilo macchina non usa ugello 0,4 mm")
-	}
-	return nil
+	_, err := ResolvePrinterProfile(path)
+	return err
 }
-func validateBaseProcess(path string) (map[string]any, error) {
+func validateBaseProcessForPrinter(path string, printer PrinterProfile) (map[string]any, error) {
 	m, e := readJSONMap(path)
 	if e != nil {
 		return nil, e
@@ -412,10 +464,25 @@ func validateBaseProcess(path string) (map[string]any, error) {
 	if strings.ToLower(mapText(m, "type")) != "process" {
 		return nil, errors.New("file base non è un profilo processo")
 	}
-	if !profileMentionsAD5M(m) {
-		return nil, errors.New("profilo processo non dichiara compatibilità AD5M")
+	if !profileMentionsPrinter(m, printer) {
+		return nil, fmt.Errorf("profilo processo non dichiara compatibilità con %s", printer.Model)
 	}
 	return m, nil
+}
+
+func validateBaseProcess(path string) (map[string]any, error) {
+	return validateBaseProcessForPrinter(path, DefaultPrinterProfile())
+}
+
+func profileMentionsPrinter(m map[string]any, printer PrinterProfile) bool {
+	b, _ := json.Marshal(m)
+	text := string(b)
+	for _, alias := range printer.Aliases {
+		if containsPrinterAlias(text, alias) {
+			return true
+		}
+	}
+	return false
 }
 func validateBaseFilament(path, material string) (map[string]any, error) {
 	m, e := readJSONMap(path)
@@ -437,7 +504,11 @@ func validateBaseFilament(path, material string) (map[string]any, error) {
 }
 
 func PatchProfiles(baseProcess, baseFilament string, rec Recommendation, f Filament, outDir string) (string, string, string, error) {
-	p, e := validateBaseProcess(baseProcess)
+	return PatchProfilesForPrinter(baseProcess, baseFilament, rec, f, DefaultPrinterProfile(), outDir)
+}
+
+func PatchProfilesForPrinter(baseProcess, baseFilament string, rec Recommendation, f Filament, printer PrinterProfile, outDir string) (string, string, string, error) {
+	p, e := validateBaseProcessForPrinter(baseProcess, printer)
 	if e != nil {
 		return "", "", "", e
 	}
@@ -445,7 +516,7 @@ func PatchProfiles(baseProcess, baseFilament string, rec Recommendation, f Filam
 	if e != nil {
 		return "", "", "", e
 	}
-	pname := recommendationProfileName(rec)
+	pname := recommendationProfileNameForPrinter(rec, printer)
 	fname := safeProfileName("FlashFit " + f.Brand + " " + f.Product)
 	p["type"] = "process"
 	p["name"] = pname
@@ -476,7 +547,7 @@ func PatchProfiles(baseProcess, baseFilament string, rec Recommendation, f Filam
 	pp := filepath.Join(outDir, "flashfit_process.json")
 	ff := filepath.Join(outDir, "flashfit_filament.json")
 	ss := filepath.Join(outDir, "flashfit_summary.json")
-	summary := map[string]any{"schema_version": 6, "machine": "Flashforge Adventurer 5M", "nozzle_mm": 0.4, "base_process": baseProcess, "base_filament": baseFilament, "process_profile_name": pname, "filament_profile_name": fname, "critical_values": rec.CriticalValues, "critical_settings": rec.CriticalSettings, "recommendation": rec, "model_sha256": ""}
+	summary := map[string]any{"schema_version": 7, "machine_id": printer.ID, "machine": printer.Brand + " " + printer.Model, "nozzle_mm": printer.NozzleDiameter, "build_volume_mm": printer.BuildVolume, "base_process": baseProcess, "base_filament": baseFilament, "process_profile_name": pname, "filament_profile_name": fname, "critical_values": rec.CriticalValues, "critical_settings": rec.CriticalSettings, "recommendation": rec, "model_sha256": ""}
 	if e = atomicJSON(pp, p); e != nil {
 		return "", "", "", e
 	}
@@ -528,6 +599,17 @@ func recommendationProfileName(rec Recommendation) string {
 	}
 	return safeProfileName(name + " AD5M 0.4")
 }
+
+func recommendationProfileNameForPrinter(rec Recommendation, printer PrinterProfile) string {
+	if printer.ID == "flashforge-adventurer-5m" {
+		return recommendationProfileName(rec)
+	}
+	name := "FlashFit " + rec.QualityLabel
+	if rec.Quality == "perfect" && rec.TextureLabel != "" && rec.Texture != "none" {
+		name += " - " + rec.TextureLabel
+	}
+	return safeProfileName(fmt.Sprintf("%s %s 0.4", name, printer.Model))
+}
 func atomicJSON(path string, v any) error {
 	b, e := json.MarshalIndent(v, "", "  ")
 	if e != nil {
@@ -570,7 +652,11 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 	if err := ProbeSlicerCLI(req.SlicerExe); err != nil {
 		return ImportResult{}, err
 	}
-	if err := ValidateMachineProfile(req.Machine); err != nil {
+	printer, err := ResolvePrinterProfile(req.Machine)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	if err := ValidateModelForPrinter(req.Model, printer); err != nil {
 		return ImportResult{}, err
 	}
 	if !fileExists(req.Model.StoredModelPath) {
@@ -586,7 +672,7 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 			return ImportResult{}, errors.New("il file originale è cambiato dopo l'analisi: riesegui Analizza")
 		}
 	}
-	rec, e := RecommendWithTexture(req.Model, req.Filament, req.Quality, req.Texture)
+	rec, e := RecommendForPrinterWithTexture(req.Model, req.Filament, printer, req.Quality, req.Texture)
 	if e != nil {
 		return ImportResult{}, e
 	}
@@ -602,7 +688,7 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 		return ImportResult{}, e
 	}
 	defer os.RemoveAll(work)
-	pp, ff, summary, e := PatchProfiles(req.BaseProcess, req.BaseFilament, rec, req.Filament, work)
+	pp, ff, summary, e := PatchProfilesForPrinter(req.BaseProcess, req.BaseFilament, rec, req.Filament, printer, work)
 	if e != nil {
 		return ImportResult{}, e
 	}
@@ -655,7 +741,7 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 		}
 		return ImportResult{}, fmt.Errorf("Flash Studio non ha prodotto un progetto valido: %v\n%s", e, tail(stderr.String(), 1800))
 	}
-	markers := []string{recommendationProfileName(rec), safeProfileName("FlashFit " + req.Filament.Brand + " " + req.Filament.Product)}
+	markers := []string{recommendationProfileNameForPrinter(rec, printer), safeProfileName("FlashFit " + req.Filament.Brand + " " + req.Filament.Product)}
 	if e = validate3MF(candidate, markers, rec, &req.Model); e != nil {
 		return ImportResult{}, fmt.Errorf("3MF prodotto non certificato: %w", e)
 	}
