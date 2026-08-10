@@ -1,0 +1,43 @@
+{
+  "RT_GROUP_ICON": {
+    "#1": {
+      "0409": "../../FlashFit-AI-Brand-Icon.png"
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "description": "FlashFit AI spatial assistant for 3D-print preparation",
+        "minimum-os": "win10",
+        "execution-level": "as invoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "per monitor v2",
+        "long-path-aware": true,
+        "use-common-controls-v6": true
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "4.2.1.0",
+          "product_version": "4.2.1.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "FlashFit AI",
+            "FileDescription": "FlashFit AI Spatial for Windows",
+            "FileVersion": "4.2.1.0",
+            "InternalName": "FlashFitAI",
+            "LegalCopyright": "Copyright 2026 FlashFit AI",
+            "OriginalFilename": "FlashFit-AI-Windows-11.exe",
+            "ProductName": "FlashFit AI Spatial",
+            "ProductVersion": "4.2.1.0"
+          }
+        }
+      }
+    }
+  }
+}

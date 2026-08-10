@@ -21,8 +21,12 @@ import (
 	"flashfitai/shared"
 )
 
+var (
+	buildVersion = "4.2.1-spatial-engineering-beta"
+	appTitle     = "FlashFit AI Spatial " + buildVersion
+)
+
 const (
-	appTitle  = "FlashFit AI Spatial 4.2 Engineering Beta"
 	className = "FlashFitAI_Spatial_MainWindow_v40"
 
 	WM_CREATE         = 0x0001
@@ -395,7 +399,7 @@ func main() {
 		case "--qa-textures":
 			qaTextureMode = true
 		case "--version":
-			fmt.Println("4.2.0-spatial-engineering-beta")
+			fmt.Println(buildVersion)
 			return
 		}
 	}
@@ -507,12 +511,29 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		return 0
 	case WM_SIZE:
 		layoutUI(hwnd)
+		if wParam == SIZE_MINIMIZED {
+			stopSpatialAnimation(hwnd)
+		} else if !spatialResizing {
+			startSpatialAnimation(hwnd)
+		}
+		return 0
+	case WM_ENTERSIZEMOVE:
+		spatialResizing = true
+		stopSpatialAnimation(hwnd)
+		return 0
+	case WM_EXITSIZEMOVE:
+		spatialResizing = false
+		mainSpatialBuffer.reset()
+		cleanupSpatialMaterialSystem()
+		spatialViewportWidth, spatialViewportHeight = 0, 0
+		startSpatialAnimation(hwnd)
+		invalidateSpatial()
 		return 0
 	case WM_PAINT:
 		paintSpatialUI(hwnd)
 		return 0
 	case WM_TIMER:
-		if wParam == idSpatialAnimation {
+		if wParam == idSpatialAnimation && spatialAnimationActive(hwnd) {
 			spatialAnimationTick++
 			invalidateSpatial()
 		}
