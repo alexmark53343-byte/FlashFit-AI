@@ -80,6 +80,9 @@ var shellTextByLanguage = map[string]map[string]string{
 		"checkAINoChange":           "nessuna modifica proposta",
 		"checkSOG":                  "S.O.G",
 		"checkSOGRepaired":          "%d correzioni di sicurezza",
+		"checkSOGClean":             "nessuna correzione necessaria",
+		"checkSOGHeld":              "stampa non autorizzata",
+		"checkSOGWaiting":           "attivo, in attesa di un modello",
 	},
 	"en": {
 		"workflowTitle":             "Print workflow",
@@ -158,6 +161,9 @@ var shellTextByLanguage = map[string]map[string]string{
 		"checkAINoChange":           "no change proposed",
 		"checkSOG":                  "S.O.G",
 		"checkSOGRepaired":          "%d safety corrections",
+		"checkSOGClean":             "no correction needed",
+		"checkSOGHeld":              "print not cleared",
+		"checkSOGWaiting":           "active, waiting for a model",
 	},
 	"fr": {
 		"workflowTitle":             "Flux d'impression",
@@ -236,6 +242,9 @@ var shellTextByLanguage = map[string]map[string]string{
 		"checkAINoChange":           "aucune modification proposée",
 		"checkSOG":                  "S.O.G",
 		"checkSOGRepaired":          "%d corrections de sécurité",
+		"checkSOGClean":             "aucune correction nécessaire",
+		"checkSOGHeld":              "impression non autorisée",
+		"checkSOGWaiting":           "actif, en attente d’un modèle",
 	},
 	"es": {
 		"workflowTitle":             "Flujo de impresión",
@@ -314,6 +323,9 @@ var shellTextByLanguage = map[string]map[string]string{
 		"checkAINoChange":           "sin cambios propuestos",
 		"checkSOG":                  "S.O.G",
 		"checkSOGRepaired":          "%d correcciones de seguridad",
+		"checkSOGClean":             "sin correcciones necesarias",
+		"checkSOGHeld":              "impresión no autorizada",
+		"checkSOGWaiting":           "activo, esperando un modelo",
 	},
 	"de": {
 		"workflowTitle":             "Druck-Workflow",
@@ -392,6 +404,9 @@ var shellTextByLanguage = map[string]map[string]string{
 		"checkAINoChange":           "keine Änderung vorgeschlagen",
 		"checkSOG":                  "S.O.G",
 		"checkSOGRepaired":          "%d Sicherheitskorrekturen",
+		"checkSOGClean":             "keine Korrektur nötig",
+		"checkSOGHeld":              "Druck nicht freigegeben",
+		"checkSOGWaiting":           "aktiv, wartet auf ein Modell",
 	},
 }
 

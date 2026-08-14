@@ -1329,6 +1329,17 @@ func updateRecommendation() {
 	if err != nil {
 		return
 	}
+	// S.O.G runs here, not only at import.
+	//
+	// It used to run inside PrepareImport alone, which meant the panel showed
+	// the profile *before* its corrections and the slicer received the one
+	// after: different speeds, a different estimate, and no way to tell from
+	// the window which set was real. Securing the profile as it is computed
+	// makes what is on screen the thing that will be printed — and gives the
+	// checks panel something to report before the user has committed to
+	// anything. Import recomputes from scratch and secures once, so nothing is
+	// corrected twice.
+	shared.LastSOGVerdict = shared.SecureProfile(&r, *app.analysis, f, printer)
 	app.recommendation = &r
 }
 

@@ -1057,18 +1057,27 @@ func modelChecks() []modelCheck {
 func printReadinessChecks() []modelCheck {
 	readiness := shared.LastPrintReadiness
 	if app.recommendation == nil {
-		return nil
+		// S.O.G is part of the application, not something that switches on, so
+		// the row is there before there is anything to secure. Its absence read
+		// as "not running", which is the one thing it never is.
+		return []modelCheck{{label: tr("checkSOG"), detail: tr("checkSOGWaiting"), level: 0}}
 	}
 	rows := make([]modelCheck, 0, len(readiness.Issues)+1)
-	// What S.O.G did comes first: a profile that was corrected is not the same
-	// as one that needed nothing, and the user is entitled to know which they
-	// are looking at before reading the rest of the rows.
-	if verdict := shared.LastSOGVerdict; len(verdict.Repairs) > 0 {
-		rows = append(rows, modelCheck{
-			label:  tr("checkSOG"),
-			detail: trf("checkSOGRepaired", len(verdict.Repairs)),
-			level:  0,
-		})
+	// What S.O.G did comes first, and it is always said.
+	//
+	// Showing the row only when something was corrected made "it ran and found
+	// nothing" and "it never ran" look identical, which is not a state the user
+	// should have to guess at about the layer that authorises the print. So the
+	// row is present whenever there is a profile to have secured, and reports
+	// which of the three it is.
+	verdict := shared.LastSOGVerdict
+	switch {
+	case !verdict.Cleared:
+		rows = append(rows, modelCheck{label: tr("checkSOG"), detail: tr("checkSOGHeld"), level: 2})
+	case len(verdict.Repairs) > 0:
+		rows = append(rows, modelCheck{label: tr("checkSOG"), detail: trf("checkSOGRepaired", len(verdict.Repairs)), level: 0})
+	default:
+		rows = append(rows, modelCheck{label: tr("checkSOG"), detail: tr("checkSOGClean"), level: 0})
 	}
 	if len(readiness.Issues) == 0 {
 		return append(rows, modelCheck{label: tr("checkSimulation"), detail: tr("checkSimulationClear"), level: 0})
