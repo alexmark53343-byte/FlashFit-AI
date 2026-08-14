@@ -64,17 +64,29 @@ func CheckPrintReadiness(rec Recommendation, a ModelAnalysis, f Filament, printe
 		outerWidth = 0.42
 	}
 
+	manual := ManualFor(printer)
+
+	// A layer the fitted nozzle cannot lay down. This is the check that was
+	// missing entirely: a fine quality tier on a wide nozzle asked for an
+	// extrusion with nowhere to go, and nothing said so.
+	if layer > 0 {
+		if _, ok := manual.LayerFits(layer); !ok {
+			limit := manual.MaxLayer
+			if layer < manual.MinLayer {
+				limit = manual.MinLayer
+			}
+			add("checkLayerNozzle", 2, layer, limit,
+				fmt.Sprintf("layer %.2f mm con ugello %.1f mm (ammesso %.2f–%.2f)",
+					layer, manual.Printer.NozzleDiameter, manual.MinLayer, manual.MaxLayer))
+		}
+	}
+
 	// Ghosting: ringing behind corners comes from accelerating a moving mass
 	// faster than the frame can absorb, and a tall part amplifies it because the
-	// gantry has more leverage over the bed.
+	// gantry has more leverage over the bed. The ceiling is the manual's, so the
+	// repair that aims at it cannot drift away from the check that reports it.
 	outerAccel := num("outer_wall_acceleration")
-	ghostLimit := printer.MaxAcceleration * 0.55
-	if a.Extents[2] > 120 {
-		ghostLimit *= 0.75
-	}
-	if a.ThinOrTall {
-		ghostLimit *= 0.8
-	}
+	ghostLimit := manual.AccelerationCeiling(a.Extents[2], a.ThinOrTall)
 	if outerAccel > ghostLimit && ghostLimit > 0 {
 		add("checkGhosting", 1, outerAccel, ghostLimit,
 			fmt.Sprintf("%.0f mm/s² su un pezzo alto %.0f mm", outerAccel, a.Extents[2]))

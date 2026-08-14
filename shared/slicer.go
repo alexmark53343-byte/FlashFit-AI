@@ -790,7 +790,18 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 			if e != nil {
 				return ImportResult{}, fmt.Errorf("%v (e la geometria non è divisibile: %v)", fitErr, e)
 			}
-			plates, oversized := PackIntoPlates(SplitIntoPieces(tris), printer.BuildVolume)
+			// Laid out against the usable plate, the same measurement the check
+			// above refused it on. Packing against the raw volume would produce
+			// plates the machine cannot actually print.
+			usable := ManualFor(printer).UsablePlate
+			pieces := SplitIntoPieces(tris)
+			// S.O.G looks again at whatever is still too big. A piece that is
+			// really several objects welded together — a boolean union, a
+			// print-in-place assembly, parts on a sprue — reads as one solid to
+			// the connectivity split, and would otherwise be reported as
+			// unprintable when it only needed taking apart at its join.
+			pieces, separated := SeparateOversizedUnions(pieces, usable)
+			plates, oversized := PackIntoPlates(pieces, usable)
 			if len(plates) == 0 {
 				return ImportResult{}, fitErr
 			}
@@ -801,6 +812,9 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 			project = written[0]
 			note = fmt.Sprintf("Il modello non entra in un solo piatto: FlashFit lo ha diviso in %s, a dimensione piena. ",
 				DescribePlates(plates, oversized))
+			if separated > 0 {
+				note += fmt.Sprintf("S.O.G ha riconosciuto %d oggetti uniti in un solo solido e li ha separati al punto di giunzione, richiudendo le facce di taglio. ", separated)
+			}
 			if len(oversized) > 0 {
 				note += fmt.Sprintf("%d pezzi restano troppo grandi anche da soli e vanno scalati o tagliati. ", len(oversized))
 			}

@@ -78,6 +78,23 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 	p = adaptPresetForDuration(p, quality, durationClass, a)
 	applyPrinterMotionGuardrails(&p, printer, a)
 
+	// The fitted nozzle decides which layer heights exist at all. A 0.8 mm
+	// nozzle cannot lay a 0.12 mm layer — the melt has nowhere to go — so the
+	// finest tier has to mean something different on a wide nozzle than it does
+	// on a narrow one.
+	//
+	// It is clamped here rather than left to be discovered later, and it is
+	// always said out loud in the reasons. Quietly serving a different layer
+	// height than the tier implies is the exact behaviour that made the quality
+	// setting untrustworthy once already.
+	manual := ManualFor(printer)
+	nozzleLayerNote := ""
+	if fitted, ok := manual.LayerFits(p.Layer); !ok {
+		nozzleLayerNote = fmt.Sprintf("Ugello da %.1f mm: l'altezza layer di questa qualità (%.2f mm) non è stampabile e viene portata a %.2f mm, il limite fisico dell'ugello (%.2f–%.2f mm).",
+			printer.NozzleDiameter, p.Layer, fitted, manual.MinLayer, manual.MaxLayer)
+		p.Layer = fitted
+	}
+
 	// A producer MVS is an upper bound, not a quality target. Every mode keeps a
 	// filament-aware margin and all requested speeds are volume-capped below it.
 	safety := 0.74
@@ -284,6 +301,10 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		fmt.Sprintf("%d pareti, guscio superiore minimo %.1f mm e infill gyroid al %d%% per una resistenza equilibrata.", p.Walls, topThickness, p.InfillPct),
 		"Arachne, parete precisa e cuciture interne sfalsate proteggono dettagli e continuità dei gusci.",
 		durationReason(durationClass, estimatedBalancedMinutes, relativeTime),
+	}
+	if nozzleLayerNote != "" {
+		// First, because it changes what the chosen quality tier means.
+		reasons = append([]string{nozzleLayerNote}, reasons...)
 	}
 	if f.RecommendedSpeedMax > 0 {
 		reasons = append(reasons, fmt.Sprintf("Velocità lineare limitata a %.0f mm/s come tetto della scheda tecnica; la MVS resta il limite dominante.", linearLimit))

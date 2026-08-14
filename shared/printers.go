@@ -193,14 +193,19 @@ func ResolvePrinterProfile(path string) (PrinterProfile, error) {
 // wider than the plate while each piece fits comfortably; those go on separate
 // plates rather than being refused.
 func ValidateModelForPrinter(a ModelAnalysis, p PrinterProfile) error {
+	// The usable plate, not the raw build volume. A bed loses a strip to clips,
+	// the prime line and the edge the nozzle cannot reach squarely, so a part
+	// exactly as wide as the advertised bed does not print — and passing it here
+	// only moves the failure to where it costs a plate.
+	usable := ManualFor(p).UsablePlate
 	measured := printableExtents(a)
 	for i, axis := range []string{"X", "Y", "Z"} {
-		if measured[i] > p.BuildVolume[i]+0.01 {
+		if measured[i] > usable[i]+0.01 {
 			if a.PieceCount > 1 {
-				return fmt.Errorf("pezzo singolo fuori volume %s: asse %s %.1f mm supera %.1f mm (il file contiene %d pezzi)",
-					p.Model, axis, measured[i], p.BuildVolume[i], a.PieceCount)
+				return fmt.Errorf("pezzo singolo fuori volume %s: asse %s %.1f mm supera %.1f mm utilizzabili (il file contiene %d pezzi)",
+					p.Model, axis, measured[i], usable[i], a.PieceCount)
 			}
-			return fmt.Errorf("modello fuori volume %s: asse %s %.1f mm supera %.1f mm", p.Model, axis, measured[i], p.BuildVolume[i])
+			return fmt.Errorf("modello fuori volume %s: asse %s %.1f mm supera %.1f mm utilizzabili", p.Model, axis, measured[i], usable[i])
 		}
 	}
 	return nil
