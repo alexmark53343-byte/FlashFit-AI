@@ -23,7 +23,10 @@ import (
 )
 
 var (
-	buildVersion = "4.3.0-multi-printer-engineering-beta"
+	// The one place the version is written. The window chrome, the title, the
+	// --version flag and the log line at startup all read it from here, so a
+	// build cannot claim one version on screen and another in its own log.
+	buildVersion = "4.4.2-three-layer-safety-beta"
 	appTitle     = "FlashFit AI Spatial " + buildVersion
 )
 
@@ -414,6 +417,10 @@ func main() {
 	// the runtime's report of a fatal error is written to a handle that does
 	// not exist and the window just disappears.
 	captureRuntimeFailures()
+	// Stamped first, so every log — and every crash report inside it — says
+	// which build produced it. A log without that is guesswork about which
+	// version the user was actually running.
+	writeLog("FlashFit AI " + buildVersion + " avviato")
 	defer func() {
 		if r := recover(); r != nil {
 			writeLog(fmt.Sprintf("PANIC main: %v\n%s", r, debug.Stack()))
