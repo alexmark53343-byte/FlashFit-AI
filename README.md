@@ -10,9 +10,9 @@ combination of settings for each model and material is still needlessly hard.
 
 ## Downloads
 
-### Windows 11 x64 — 4.3.0 · current
+### Windows 11 x64 — 4.4.0 · current
 
-[**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.2 MB
+[**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.4 MB
 
 Extract and run. Nothing to install. The AI model is not in the download — the
 application fetches it the first time you choose one, so the app itself stays
@@ -60,17 +60,21 @@ always gives the same profile. This division is deliberate: measured against
 real cases, a small model identifies parts reliably and reasons about numbers
 badly.
 
-**Checks the finished profile before you commit.** Settings are chosen one at a
+**Repairs the finished profile before you commit.** Settings are chosen one at a
 time but a print fails on how they combine, so the whole set is walked against
 the machine and the material: ringing from acceleration on tall parts, flow
 beyond what the filament can melt, bridges laid faster than they can set,
-cooling time on fine layers, temperatures outside either limit. A predicted
-defect costs nothing; the same defect found on the plate costs the print.
+cooling time on fine layers, a layer height the fitted nozzle cannot lay,
+temperatures outside either limit. Anything predicted is corrected and the
+profile is checked again, and the slicer only opens once it comes back clean.
 
 **Splits a model that does not fit onto more plates.** A download is often
 several separate parts sharing one file. Rather than refusing it, or shrinking
 it, the geometry is separated into its actually disconnected pieces and packed
-over as many plates as the machine needs — at full size.
+over as many plates as the machine needs — at full size. Parts welded into a
+single solid — a boolean union, a print-in-place assembly, pieces on a sprue —
+are recognised by the pinch at their join and separated there, with both cut
+faces closed.
 
 **Writes a project the slicer opens with the settings applied.** Built on top of
 the installed profiles, with the FlashFit values laid over them, so vendor
@@ -99,6 +103,26 @@ speed the machine up, leave the envelope or exceed the tier's time budget is
 discarded whole. Advice that is merely too expensive is scaled back until it
 fits, rather than thrown away. With no model present, the results are identical
 to the deterministic path — there is a test that asserts exactly that.
+
+### The three layers
+
+| | Does what | Cannot do |
+|---|---|---|
+| **Model** | Says what the part is, how much its surface will be looked at, and which known problems it is prone to | Choose any number |
+| **Guardrail** | Decides whether to believe it — the class is checked against the measured mesh, and one the geometry denies is withdrawn while the name is kept | Let an off-contract answer through |
+| **S.O.G** | *Security On Guardrail.* Corrects the finished profile, re-checks, and clears the print only after its last change | Make anything faster or hotter |
+
+The guardrail's checks used to be one-sided: they refused advice for asking too
+much, so a misclassification that made the print *worse* passed untouched —
+"hollow" on a solid bracket removes infill and slows down, which is safe by every
+rule and wrong. The class is now verified against the mesh, and solidity is
+ignored outright when the mesh is not closed, because a mesh with holes has no
+volume and every number derived from it is an artefact.
+
+S.O.G's use of the model is **monotone**: every answer it can give either leaves
+a safety margin where it was or widens it. The worst case of a wrong answer is a
+print more careful than it needed to be. Both layers read the same machine
+manual, so a limit has one definition rather than one per file.
 
 ---
 
