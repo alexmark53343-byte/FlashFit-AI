@@ -1518,11 +1518,66 @@ func drawNavItem(hdc uintptr, r rect, label string, icon func(uintptr, int32, in
 	text(hdc, label, rect{r.Left + 48, r.Top, r.Right - 10, r.Bottom}, hFontBody, labelColor, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
+// The sidebar card is where the question actually gets asked, so it is where it
+// gets answered.
+//
+// It used to be a slogan: a star, the words "Guardrail attivi", and a sentence,
+// painted identically whether or not anything was being checked. A claim that
+// cannot come out false is not a status — it is decoration that looks like one,
+// which is worse than no indicator at all, and this is the most prominent place
+// in the window.
+//
+// Now both layers report here with a dot each, and the card can say no.
 func drawPromoCard(hdc uintptr, r rect) {
 	sunkenChip(hdc, r, 15)
-	drawStarIcon(hdc, r.Left+24, r.Top+24, th.accent)
-	text(hdc, tr("promoTitle"), rect{r.Left + 42, r.Top + 12, r.Right - 12, r.Top + 36}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, tr("promoBody"), rect{r.Left + 14, r.Top + 40, r.Right - 14, r.Bottom - 12}, hFontSmall, th.textMuted, DT_LEFT|DT_TOP|DT_WORDBREAK)
+
+	rowH := int32(22)
+	y := r.Top + 10
+	statusRow := func(label string, ok bool) {
+		color := th.okColor
+		if !ok {
+			color = th.warnColor
+		}
+		circle(hdc, r.Left+18, y+rowH/2, 4, color, color)
+		text(hdc, label, rect{r.Left + 30, y, r.Right - 12, y + rowH}, hFontBody, th.textPrimary,
+			DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		y += rowH
+	}
+	guardLabel, guardOK := guardrailState()
+	sogLabel, sogOK := sogState()
+	statusRow(guardLabel, guardOK)
+	statusRow(sogLabel, sogOK)
+
+	if body := r.Bottom - 8 - (y + 4); body > 14 {
+		text(hdc, tr("promoBody"), rect{r.Left + 14, y + 4, r.Right - 14, r.Bottom - 8}, hFontSmall, th.textMuted,
+			DT_LEFT|DT_TOP|DT_WORDBREAK)
+	}
+}
+
+// guardrailState and sogState are the two dots. Green means the layer inspected
+// this profile; red means it did not, and the two ways that happens are worth
+// telling apart.
+//
+// Nothing to inspect is the quiet one: a model is loaded but no profile came
+// out of it — an unresolved printer, a filament the machine cannot run — so
+// neither layer saw anything. Held is the loud one: S.O.G looked and refused to
+// clear the print. Both are red, because both mean the profile in front of the
+// user has not been approved.
+func guardrailState() (string, bool) {
+	if app.analysis != nil && app.recommendation == nil {
+		return tr("promoGuardrailIdle"), false
+	}
+	return tr("promoGuardrailOn"), true
+}
+
+func sogState() (string, bool) {
+	if app.analysis != nil && app.recommendation == nil {
+		return tr("promoSOGIdle"), false
+	}
+	if app.recommendation != nil && !shared.LastSOGVerdict.Cleared {
+		return tr("promoSOGHeld"), false
+	}
+	return tr("promoSOGOn"), true
 }
 
 func drawCubeIcon(hdc uintptr, cx, cy int32, color uintptr) {
@@ -1542,14 +1597,6 @@ func drawLayersIcon(hdc uintptr, cx, cy int32, color uintptr) {
 		line(hdc, cx-9, cy+off, cx, cy+off-4, color, 2)
 		line(hdc, cx, cy+off-4, cx+9, cy+off, color, 2)
 	}
-}
-
-func drawStarIcon(hdc uintptr, cx, cy int32, color uintptr) {
-	circle(hdc, cx, cy, 11, th.accentTintB, color)
-	line(hdc, cx, cy-6, cx, cy+6, color, 2)
-	line(hdc, cx-6, cy, cx+6, cy, color, 2)
-	line(hdc, cx-4, cy-4, cx+4, cy+4, color, 1)
-	line(hdc, cx-4, cy+4, cx+4, cy-4, color, 1)
 }
 
 func drawWorkspace(hdc uintptr) {
