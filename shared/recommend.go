@@ -348,15 +348,32 @@ func applyAdvisor(base qualityPreset, a ModelAnalysis, quality string, printer P
 	// straight away; a miss starts a request and falls through to the rules, so
 	// this function never waits on the network.
 	if deltas, ok := lookupOrRequestAdvice(advisorConfigFromEnv(), a, quality, base); ok {
-		LastAdvisorOutcome = AdvisorOutcome{Used: true, Object: deltas.Object, Reason: deltas.Reason}
-		if proposal, scaled, accepted := admitAdvice(base, deltas, quality); accepted {
-			LastAdvisorOutcome.Accepted = true
-			LastAdvisorOutcome.Scaled = scaled
-			return proposal
+		LastAdvisorOutcome = AdvisorOutcome{
+			Used:     true,
+			Object:   deltas.Object,
+			Reason:   deltas.Reason,
+			Mismatch: deltas.ShapeMismatch,
+			Finish:   deltas.Finish,
 		}
-		// Unsafe advice gets no second chance at the profile: fall back to the
-		// rules, which face the same veto below.
-		LastAdvisorOutcome.Detail = advisorRejectionReason(base, applyAdvisorDeltas(base, deltas), quality)
+		switch {
+		case !deltas.hasEffect():
+			// The model answered but asked for nothing — it said "unknown", or
+			// the guard withdrew a class the mesh contradicted. Accepting a
+			// no-op here would *replace* the category tuning below with
+			// nothing, so consulting the model and having it honestly decline
+			// would leave a worse profile than never consulting it. Abstention
+			// falls through to the rules instead.
+			LastAdvisorOutcome.Abstained = true
+		default:
+			if proposal, scaled, accepted := admitAdvice(base, deltas, quality); accepted {
+				LastAdvisorOutcome.Accepted = true
+				LastAdvisorOutcome.Scaled = scaled
+				return proposal
+			}
+			// Unsafe advice gets no second chance at the profile: fall back to
+			// the rules, which face the same veto below.
+			LastAdvisorOutcome.Detail = advisorRejectionReason(base, applyAdvisorDeltas(base, deltas), quality)
+		}
 	}
 	proposal := base
 	tuneForCategory(&proposal, a, quality)

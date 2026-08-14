@@ -720,15 +720,21 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 	if e != nil {
 		return ImportResult{}, e
 	}
-	// The finished profile is walked against the machine and the material
-	// before anything is written. Settings are chosen individually but a print
-	// fails on how they combine, and a defect predicted here costs nothing
-	// while the same defect found on the plate costs the whole print.
-	readiness := CheckPrintReadiness(rec, req.Model, req.Filament, printer)
-	LastPrintReadiness = readiness
-	if readiness.Blocked {
+	// S.O.G — Security On Guardrail. The finished profile is walked against the
+	// machine and the material, and anything that would show up in the print is
+	// corrected here rather than reported and left. Settings are chosen
+	// individually but a print fails on how they combine, and this is the last
+	// point at which that costs nothing instead of costing the whole print.
+	//
+	// It only ever slows the profile down, so what comes out is never faster or
+	// hotter than what the tier already approved. The import proceeds on its
+	// go-ahead: a defect it could not correct still stops the import, which is
+	// now the exception rather than the first answer.
+	verdict := SecureProfile(&rec, req.Model, req.Filament, printer)
+	LastSOGVerdict = verdict
+	if !verdict.Cleared {
 		detail := ""
-		for _, issue := range readiness.Issues {
+		for _, issue := range LastPrintReadiness.Issues {
 			if issue.Severity >= 2 {
 				detail = issue.Detail
 				break

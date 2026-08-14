@@ -16,7 +16,7 @@ func TestAdvisorNeverBlocksCaller(t *testing.T) {
 		// Far longer than any acceptable UI stall.
 		time.Sleep(3 * time.Second)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"object\":\"test\",\"walls_delta\":1}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"object\":\"test\",\"class\":\"mechanical\",\"reason\":\"x\"}"}}]}`))
 	}))
 	defer slow.Close()
 
@@ -52,7 +52,7 @@ func TestAdvisorCachesAnswer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"object\":\"staffa\",\"walls_delta\":1,\"speed_scale\":0.9}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"object\":\"staffa\",\"class\":\"mechanical\",\"reason\":\"staffa che porta carico\"}"}}]}`))
 	}))
 	defer server.Close()
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -31,8 +32,11 @@ const (
 	// A 1.5B model on CPU needs a few seconds for a short JSON answer. The
 	// budget is generous enough to be useful and short enough that a stuck
 	// server never holds up a recommendation.
-	advisorTimeout = 12 * time.Second
-	advisorMaxDelta        = 2
+	advisorTimeout  = 12 * time.Second
+	advisorMaxDelta = 2
+	// A reply is a short JSON object. Past this it is not an answer, and
+	// reading it would only be doing a broken server a favour.
+	advisorMaxReplyBytes = 64 << 10
 )
 
 // AdvisorConfig is resolved from the environment so the model can be pointed
@@ -77,6 +81,11 @@ type advisorDeltas struct {
 	Object string `json:"object"`
 	Class  string `json:"class"`
 	Reason string `json:"reason"`
+	// Finish is the second recognition, and the only thing the model
+	// contributes to S.O.G: how much the look of this part matters. It moves no
+	// setting by itself — it decides how much clearance S.O.G keeps below each
+	// safety limit, and can only ever ask for more. See sogMargin.
+	Finish string `json:"finish"`
 
 	// Filled in from Class by deltasForClass, never parsed from the reply.
 	Walls      int
@@ -84,6 +93,12 @@ type advisorDeltas struct {
 	BotLayers  int
 	Infill     int
 	SpeedScale float64
+
+	// ShapeMismatch names the measurement that withdrew the model's class, and
+	// is empty when the mesh agreed with it. It carries no setting of its own:
+	// it exists so the interface can say the part was recognised but its shape
+	// did not back the claim, rather than silently showing one or the other.
+	ShapeMismatch string
 }
 
 // deltasForClass turns a recognised kind of object into setting adjustments.
@@ -144,6 +159,17 @@ type AdvisorOutcome struct {
 	Object   string // what the model thought the part was
 	Reason   string // its one-line justification
 	Detail   string // why the veto refused, when it did
+
+	// Abstained means the model answered without asking for anything: either it
+	// said "unknown", or the guard withdrew a class the mesh did not support.
+	// The recognition may still be worth showing, but the profile came from the
+	// rules, and reporting that as "advice applied" would be a lie.
+	Abstained bool
+	// Mismatch is the measurement that withdrew the class, when one did.
+	Mismatch string
+	// Finish is the recognised surface sensitivity, which S.O.G reads to decide
+	// how much clearance to keep below each safety limit.
+	Finish string
 }
 
 // LastAdvisorOutcome is written by the recommendation path and read by the UI.
@@ -195,7 +221,7 @@ type advisorChatResponse struct {
 const advisorSystemPrompt = `You identify what a 3D printed part is.
 
 Reply with ONLY a JSON object. No prose, no markdown:
-{"object":string,"class":string,"reason":string}
+{"object":string,"class":string,"finish":string,"reason":string}
 
 "object": what the part is, in one or two words ("vase", "phone stand", "gear").
 The file name is the strongest evidence - trust a name that clearly states what the part is,
@@ -212,13 +238,20 @@ If the name says nothing recognisable, answer exactly "unknown". Never invent a 
 Judge "class" on the numbers when the numbers and the name disagree: a file called "vase"
 with solidity 0.62 is not hollow.
 
+"finish": exactly one of these words - how much the surface of this part will be looked at:
+  showpiece   - the surface is the whole point. Display models, figurines, art, gifts.
+  visible     - it will be seen in use, but small marks do not matter. Cases, enclosures, handles.
+  functional  - nobody looks at it, it just has to work. Brackets, jigs, internal parts.
+  hidden      - it ends up inside or underneath something.
+  unknown     - not enough evidence.
+
 "reason": one short sentence naming the evidence you used.
 
 Examples, note how different they are:
-{"object":"vase","class":"hollow","reason":"solidity 0.09 is a shell around air"}
-{"object":"motor bracket","class":"mechanical","reason":"solid part named as a bracket, takes load"}
-{"object":"porsche 911","class":"decorative","reason":"named as a car model, made to be looked at"}
-{"object":"unknown","class":"unknown","reason":"name says nothing and the shape is unremarkable"}`
+{"object":"vase","class":"hollow","finish":"showpiece","reason":"solidity 0.09 is a shell around air"}
+{"object":"motor bracket","class":"mechanical","finish":"functional","reason":"solid part named as a bracket, takes load"}
+{"object":"porsche 911","class":"decorative","finish":"showpiece","reason":"named as a car model, made to be looked at"}
+{"object":"unknown","class":"unknown","finish":"unknown","reason":"name says nothing and the shape is unremarkable"}`
 
 // AdvisorPriority is the user's stated preference, passed straight to the model
 // so its choices follow the same intent the interface shows.
@@ -248,30 +281,16 @@ func advisorPriorityText() string {
 // prints from massive ones, and the two aspect ratios say whether the thing is
 // long, tall or squat.
 func shapeDescriptors(a ModelAnalysis) string {
-	x, y, z := a.Extents[0], a.Extents[1], a.Extents[2]
-	box := x * y * z
-	solidity := 0.0
-	if box > 0 {
-		solidity = a.Volume / box
+	s := shapeFactsOf(a)
+	descriptors := fmt.Sprintf("solidity %.2f (1.0 = solid block, 0.1 = thin hollow shell), shell ratio %.1f, elongation %.1f, height ratio %.2f",
+		s.Solidity, s.Shell, s.Elongation, s.Flatness)
+	if !s.VolumeTrusted {
+		// Saying so is better than letting the model reason from a number that
+		// means nothing: a mesh with holes has no enclosed volume, so solidity
+		// and shell ratio are artefacts rather than measurements.
+		descriptors += " (mesh not closed: solidity unreliable, judge on the name and the proportions)"
 	}
-	// Surface area per unit volume, normalised by size so it compares across
-	// scales. High means thin-walled or highly detailed.
-	shell := 0.0
-	if a.Volume > 0 {
-		shell = a.SurfaceArea / math.Pow(a.Volume, 2.0/3.0)
-	}
-	longest := math.Max(x, math.Max(y, z))
-	shortest := math.Min(x, math.Min(y, z))
-	elongation := 0.0
-	if shortest > 0 {
-		elongation = longest / shortest
-	}
-	flatness := 0.0
-	if math.Max(x, y) > 0 {
-		flatness = z / math.Max(x, y)
-	}
-	return fmt.Sprintf("solidity %.2f (1.0 = solid block, 0.1 = thin hollow shell), shell ratio %.1f, elongation %.1f, height ratio %.2f",
-		solidity, shell, elongation, flatness)
+	return descriptors
 }
 
 func advisorUserPrompt(a ModelAnalysis, quality string, p qualityPreset) string {
@@ -343,16 +362,27 @@ func proposeWithModelDetailed(cfg AdvisorConfig, a ModelAnalysis, quality string
 		return base, advisorDeltas{}, false
 	}
 	var parsed advisorChatResponse
-	if json.NewDecoder(resp.Body).Decode(&parsed) != nil || len(parsed.Choices) == 0 {
+	// The endpoint is overridable, and a reply is a few dozen tokens of JSON.
+	// Reading it unbounded would let a wedged or hostile server stream until
+	// the app runs out of memory, which is a lot of trust to place in something
+	// this small has no need to trust at all.
+	if json.NewDecoder(io.LimitReader(resp.Body, advisorMaxReplyBytes)).Decode(&parsed) != nil || len(parsed.Choices) == 0 {
 		return base, advisorDeltas{}, false
 	}
 	recognised, ok := parseAdvisorDeltas(parsed.Choices[0].Message.Content)
 	if !ok {
 		return base, advisorDeltas{}, false
 	}
+	// Nothing the model wrote reaches a profile or a label without passing the
+	// guard: the class has to be one we defined, and the mesh has to support it.
+	recognised, mismatch, ok := vetReply(recognised, a)
+	if !ok {
+		return base, advisorDeltas{}, false
+	}
 	// The model supplied the identification; the numbers come from the class.
 	deltas := deltasForClass(recognised.Class, a, AdvisorPriority)
 	deltas.Object, deltas.Class, deltas.Reason = recognised.Object, recognised.Class, recognised.Reason
+	deltas.ShapeMismatch = mismatch
 	deltas = clampAdvisorDeltas(deltas)
 	return applyAdvisorDeltas(base, deltas), deltas, true
 }

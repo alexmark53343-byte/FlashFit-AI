@@ -1059,10 +1059,20 @@ func printReadinessChecks() []modelCheck {
 	if app.recommendation == nil {
 		return nil
 	}
-	if len(readiness.Issues) == 0 {
-		return []modelCheck{{label: tr("checkSimulation"), detail: tr("checkSimulationClear"), level: 0}}
+	rows := make([]modelCheck, 0, len(readiness.Issues)+1)
+	// What S.O.G did comes first: a profile that was corrected is not the same
+	// as one that needed nothing, and the user is entitled to know which they
+	// are looking at before reading the rest of the rows.
+	if verdict := shared.LastSOGVerdict; len(verdict.Repairs) > 0 {
+		rows = append(rows, modelCheck{
+			label:  tr("checkSOG"),
+			detail: trf("checkSOGRepaired", len(verdict.Repairs)),
+			level:  0,
+		})
 	}
-	rows := make([]modelCheck, 0, len(readiness.Issues))
+	if len(readiness.Issues) == 0 {
+		return append(rows, modelCheck{label: tr("checkSimulation"), detail: tr("checkSimulationClear"), level: 0})
+	}
 	for _, issue := range readiness.Issues {
 		level := 1
 		if issue.Severity >= 2 {
@@ -1088,14 +1098,39 @@ func advisorCheck() (modelCheck, bool) {
 	if !outcome.Used {
 		return modelCheck{label: tr("checkAI"), detail: tr("checkAIReady"), level: 0}, true
 	}
-	if outcome.Accepted {
+	// A guess we were told not to trust is not shown as a recognition.
+	object := strings.TrimSpace(outcome.Object)
+	if strings.EqualFold(object, "unknown") {
+		object = ""
+	}
+	switch {
+	case outcome.Accepted:
 		detail := tr("checkAIApplied")
-		// A guess we were told not to trust is not shown as a recognition.
-		if object := strings.TrimSpace(outcome.Object); object != "" && !strings.EqualFold(object, "unknown") {
+		if object != "" {
 			detail = object
 		}
 		if outcome.Scaled {
 			detail += " · " + tr("checkAIScaled")
+		}
+		return modelCheck{label: tr("checkAI"), detail: detail, level: 0}, true
+
+	case outcome.Mismatch != "":
+		// Recognised, but the mesh did not back the claim about its shape. Both
+		// halves are worth saying: the name is probably right, the class was
+		// dropped, and the profile came from the rules.
+		detail := tr("checkAIShapeMismatch")
+		if object != "" {
+			detail = object + " · " + detail
+		}
+		return modelCheck{label: tr("checkAI"), detail: detail, level: 1}, true
+
+	case outcome.Abstained:
+		// The model answered and asked for nothing. That is a legitimate reply,
+		// not a rejection, and showing "Rejected:" with an empty reason after it
+		// would be simply wrong.
+		detail := tr("checkAINoChange")
+		if object != "" {
+			detail = object + " · " + detail
 		}
 		return modelCheck{label: tr("checkAI"), detail: detail, level: 0}, true
 	}

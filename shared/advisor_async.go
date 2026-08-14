@@ -18,6 +18,11 @@ import (
 // the same settings is asked about once, not once per repaint.
 
 type advisorCacheKey struct {
+	// The file name is the strongest evidence the model has, so it has to be
+	// part of the key. Without it two different parts that happen to share a
+	// category and a rounded bounding box collide, and the second one is served
+	// the first one's answer — shown under the first one's name.
+	Name     string
 	Category string
 	Extents  [3]int // rounded to mm; sub-millimetre changes are not worth a re-ask
 	Quality  string
@@ -44,6 +49,7 @@ var (
 
 func advisorKeyFor(a ModelAnalysis, quality string, p qualityPreset) advisorCacheKey {
 	return advisorCacheKey{
+		Name:     a.Filename,
 		Category: a.Category,
 		Extents:  [3]int{int(a.Extents[0]), int(a.Extents[1]), int(a.Extents[2])},
 		Quality:  quality,
@@ -84,7 +90,21 @@ func lookupOrRequestAdvice(cfg AdvisorConfig, a ModelAnalysis, quality string, b
 	advisorMu.Unlock()
 
 	go func() {
-		_, deltas, ok := proposeWithModelDetailed(cfg, a, quality, base)
+		var deltas advisorDeltas
+		var ok bool
+		// A panic in a goroutine cannot be caught anywhere else — Go tears the
+		// process down at once — so the recover has to be here. This one parses
+		// whatever a local model chose to emit, which is the least predictable
+		// input in the application, and it must not be able to close the window.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					deltas, ok = advisorDeltas{}, false
+					AdvisorPanicLog = fmt.Sprintf("advisor: %v", r)
+				}
+			}()
+			_, deltas, ok = proposeWithModelDetailed(cfg, a, quality, base)
+		}()
 
 		advisorMu.Lock()
 		advisorAnswers[key] = advisorCacheEntry{deltas: deltas, valid: ok}
@@ -114,3 +134,8 @@ func AdvisorCacheStats() string {
 	defer advisorMu.Unlock()
 	return fmt.Sprintf("%d risposte, %d in corso", len(advisorAnswers), len(advisorInFlight))
 }
+
+// AdvisorPanicLog holds the last panic caught inside the advisor goroutine, if
+// one ever happens. The host writes it to the log: swallowing a panic without
+// recording it would trade a visible crash for an invisible one.
+var AdvisorPanicLog string
