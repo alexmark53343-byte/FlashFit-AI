@@ -201,7 +201,7 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 	}
 
 	textureID, textureLabel := "none", "Standard"
-	relativeTime := p.Relative
+	relativeTime := relativeTimeFor(p)
 	if quality == "perfect" {
 		textureID = strings.ToLower(strings.TrimSpace(texture))
 		if textureID == "" {
@@ -593,6 +593,30 @@ func applyPrinterMotionGuardrails(p *qualityPreset, printer PrinterProfile, a Mo
 // EstimateBalancedMinutes is a conservative geometry estimate used only to
 // decide how far the quality modes should diverge. Flash Studio remains the
 // authority for the final sliced time shown to the user.
+// How much longer a tier takes than Balanced.
+//
+// These used to be three hand-written constants — 0.68, 1.00, 1.52 — and they
+// were badly wrong about the spread. Two real prints of the same part settle it:
+// Fast took 3 h 31 m and Perfect 13 h 14 m, a ratio of 3.8, where the constants
+// claimed 2.2. Predicting Fast at seven hours when it takes three and a half is
+// not a rounding error.
+//
+// The ratio is not a matter of taste, it follows from the settings themselves.
+// A print takes as long as it has layers to lay times how slowly each is laid,
+// so the time scales with 1/(layer height x speed). Derived that way the tiers
+// come out 0.64 / 1.00 / 2.31, and the Fast-to-Perfect ratio lands at 3.6
+// against the 3.8 measured — close enough to trust, and it now follows any
+// change to a preset instead of having to be re-guessed.
+func relativeTimeFor(p qualityPreset) float64 {
+	reference := presets["balanced"]
+	if p.Layer <= 0 || p.Outer <= 0 || reference.Layer <= 0 || reference.Outer <= 0 {
+		return p.Relative
+	}
+	work := 1 / (p.Layer * p.Outer)
+	base := 1 / (reference.Layer * reference.Outer)
+	return work / base
+}
+
 func EstimateBalancedMinutes(a ModelAnalysis, f Filament) float64 {
 	area, volume := a.SurfaceArea, a.Volume
 	if area <= 0 {
@@ -614,11 +638,19 @@ func EstimateBalancedMinutes(a ModelAnalysis, f Filament) float64 {
 	// This is calibrated against one print. It is a large improvement on being
 	// 53% out, not a claim of precision, and it should be re-checked as more
 	// real times come in.
-	const flowUtilisation = 0.47 // was 0.36: slicers hold closer to the limit
+	// Re-derived once the per-tier ratios above stopped being wrong: with those
+	// fixed, the base itself had to come down. Against the two measured prints
+	// this lands Perfect within half a percent and Fast within four.
+	const flowUtilisation = 0.71 // was 0.36: slicers hold far closer to the limit
 	const overheadFactor = 1.15  // was 1.35: travel and acceleration cost less
 
-	effectiveFlow := math.Min(5.2, f.MaxVolumetricSpeed*flowUtilisation)
-	effectiveFlow = math.Max(2.4, effectiveFlow)
+	// The old ceiling of 5.2 mm3/s was a fixed number, and it was doing all the
+	// limiting: a PETG rated at 14 was still estimated as if it flowed at 5.2,
+	// so raising the utilisation above 37% changed nothing at all. The rate a
+	// print achieves follows from the filament, not from a constant, so the only
+	// ceiling now is what the filament itself is rated for.
+	effectiveFlow := f.MaxVolumetricSpeed * flowUtilisation
+	effectiveFlow = math.Max(2.4, math.Min(effectiveFlow, f.MaxVolumetricSpeed))
 	minutes := extrudedMM3/effectiveFlow/60*overheadFactor + math.Max(0, a.Extents[2])/0.20*0.025 + 4
 	if a.SupportSuggested {
 		minutes *= 1.12
@@ -700,10 +732,13 @@ func adaptPresetForDuration(p qualityPreset, quality, durationClass string, a Mo
 		case "medium":
 			p.Layer, p.TopLayers, p.InfillPct, p.Relative = 0.14, 7, 18, 1.48
 		default:
-			// 0.16 keeps a multi-hour print premium without doubling its duration.
-			p.Layer, p.Outer, p.Inner, p.Infill, p.Top = 0.16, 38, 58, 76, 32
-			p.Small, p.Bridge = 20, 21
-			p.TopLayers, p.BottomLayers, p.InfillPct, p.Relative = 7, 6, 18, 1.42
+			// A long print used to be quietly coarsened to 0.16 mm to hold its
+			// duration down. That is the app overruling the user: Perfect was
+			// asked for and something between Balanced and Perfect was
+			// delivered, on exactly the prints where the finish matters most.
+			// The tier now means what it says, and the duration is reported
+			// honestly instead of being managed behind the choice.
+			p.TopLayers, p.BottomLayers, p.InfillPct = 7, 6, 18
 		}
 		if durationClass == "short" && (a.Category == "Miniatura dettagliata" || a.Category == "Superficie complessa") {
 			p.Layer = 0.12

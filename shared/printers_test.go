@@ -132,7 +132,11 @@ func TestAllPrintersProduceBoundedQualityModes(t *testing.T) {
 		if fast.EstimatedModeMinutes > balanced.EstimatedModeMinutes+0.01 {
 			t.Fatalf("%s: Veloce più lenta di Bilanciata", printer.ID)
 		}
-		if perfect.EstimatedModeMinutes <= balanced.EstimatedModeMinutes || perfect.EstimatedModeMinutes > balanced.EstimatedModeMinutes*1.7 {
+		// The upper bound was 1.7 while the tier ratios were hand-written
+		// constants. Two real prints of the same part - Fast 3 h 31 m, Perfect
+		// 13 h 14 m - put the true Fast-to-Perfect spread at 3.8, which places
+		// Perfect around 2.3x Balanced. The bound follows the measurement.
+		if perfect.EstimatedModeMinutes <= balanced.EstimatedModeMinutes || perfect.EstimatedModeMinutes > balanced.EstimatedModeMinutes*2.8 {
 			t.Fatalf("%s: tempo Perfetta fuori fascia %.2f/%.2f", printer.ID, perfect.EstimatedModeMinutes, balanced.EstimatedModeMinutes)
 		}
 		for _, rec := range []Recommendation{fast, balanced, perfect} {

@@ -373,20 +373,30 @@ func TestDurationAdaptiveModesAvoidPointlessSpeedups(t *testing.T) {
 		}
 	}
 
-	check("short", short, "short", 0.94, 0.98, 1.55)
+	// Bounds follow from the tier ratios now being derived from layer height and
+	// speed instead of hand-written constants; the values below are what that
+	// derivation produces, and the ordering assertions above are what actually
+	// guards the behaviour.
+	check("short", short, "short", 0.88, 0.95, 2.6)
 	if r, _ := Recommend(short, filament, "low"); r.CriticalValues["layer_height"] != 0.20 {
 		t.Fatalf("stampa breve degradata inutilmente: layer %.2f", r.CriticalValues["layer_height"])
 	}
 
+	// These fixtures were sized when the estimator was roughly twice as
+	// pessimistic as reality — a fixed 5.2 mm3/s ceiling was doing all the
+	// limiting regardless of the filament. With the estimate corrected against
+	// two real prints, the same parts finish sooner and fall into shorter
+	// duration classes, so the fixtures are scaled up to still exercise the
+	// medium and long branches they exist to test.
 	medium := short
-	medium.Extents, medium.SurfaceArea, medium.Volume = [3]float64{35, 35, 35}, 7350, 42875
+	medium.Extents, medium.SurfaceArea, medium.Volume = [3]float64{55, 55, 55}, 18150, 166375
 	medium.Category, medium.ThinOrTall, medium.SupportSuggested, medium.BrimSuggested = "Oggetto tecnico/decorativo", false, false, false
-	check("medium", medium, "medium", 0.82, 0.86, 1.65)
+	check("medium", medium, "medium", 0.74, 0.80, 2.6)
 
 	long := short
-	long.Extents, long.SurfaceArea, long.Volume = [3]float64{60, 60, 60}, 21600, 216000
+	long.Extents, long.SurfaceArea, long.Volume = [3]float64{110, 110, 110}, 72600, 1331000
 	long.Category, long.ThinOrTall, long.SupportSuggested, long.BrimSuggested = "Oggetto grande", false, false, false
-	check("long", long, "long", 0.70, 0.74, 1.58)
+	check("long", long, "long", 0.60, 0.68, 2.6)
 }
 
 func TestAllGeneratedProfilesRespectOfficialAD5MLimits(t *testing.T) {
