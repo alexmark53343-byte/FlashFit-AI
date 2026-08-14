@@ -5,11 +5,14 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"flashfitai/shared"
 )
 
 const (
@@ -45,6 +48,7 @@ const (
 
 	SW_SHOWNORMAL   = 1
 	EM_SETCUEBANNER = 0x1501
+	WM_CTLCOLOREDIT = 0x0133
 
 	idLanguageIT = 2001
 	idLanguageEN = 2002
@@ -62,11 +66,16 @@ const (
 	idFilamentClose    = 4004
 	idSpatialAnimation = 5101
 	idPrinterBase      = 6000
+	idAdvisorFolder    = 6900
+	idAdvisorModelBase = 6901
 
 	// The motion is intentionally restrained. A 30 fps full-window GDI repaint
 	// offered no visible benefit for a two-pixel float but could monopolize the
 	// UI thread and trigger Windows' "not responding" watchdog.
-	spatialAnimationInterval = 100
+	// 60 Hz. The timer firing is not the same as repainting: each tick only
+	// advances float tracks and asks sceneNeedsAnimationFrame whether anything
+	// on screen actually moved. At 10 Hz the hover easing visibly stepped.
+	spatialAnimationInterval = 16
 )
 
 type paintStruct struct {
@@ -87,25 +96,49 @@ type minMaxInfo struct {
 }
 
 type spatialRegions struct {
+	toolbar  rect
+	aiStatus rect
+	aiLight  rect
+	aiHeavy  rect
+	theme    rect
 	language rect
 	advanced rect
-	device   rect
-	preview  rect
-	model    rect
-	filament rect
-	quality  rect
-	open     rect
-	fast     rect
-	balanced rect
-	perfect  rect
+
+	sidebar rect
+	nav     [5]rect
+	promo   rect
+
+	workspace rect
+	stage     rect
+	tools     [4]rect
+	dimension rect
+	drop      rect
+
+	inspector rect
+	model     rect
+	printer   rect
+	filament  rect
+	quality   rect
+	plan      rect
+	fast      rect
+	balanced  rect
+	perfect   rect
+	open      rect
+
+	status rect
+	stats  rect
 }
 
 var (
 	spatial                                                                              spatialRegions
 	hFontLogo, hFontTitle, hFontHeading, hFontBody, hFontSmall, hFontButton, hFontNumber uintptr
+	hFontEyebrow, hFontValue                                                             uintptr
 	hAppIcon                                                                             uintptr
 	hFilamentDialog, hFilamentSearchLabel, hFilamentApply, hFilamentClose                uintptr
 	spatialAnimationTick                                                                 uint32
+	stageOnlyFrame                                                                       bool
+	sceneSkipStage                                                                       bool
+	spatialLayoutValid                                                                   bool
 	spatialResizing                                                                      bool
 	spatialViewportWidth, spatialViewportHeight                                          int32
 	mainSpatialBuffer                                                                    windowBackBuffer
@@ -138,6 +171,7 @@ var (
 	pLineTo                 = gdi32.NewProc("LineTo")
 	pPolygon                = gdi32.NewProc("Polygon")
 	pSetBkMode              = gdi32.NewProc("SetBkMode")
+	pSetBkColor             = gdi32.NewProc("SetBkColor")
 	pSetTextColor           = gdi32.NewProc("SetTextColor")
 	pCreateFont             = gdi32.NewProc("CreateFontW")
 	pCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
@@ -145,6 +179,7 @@ var (
 	pSaveDC                 = gdi32.NewProc("SaveDC")
 	pRestoreDC              = gdi32.NewProc("RestoreDC")
 	pCreateRoundRectRgn     = gdi32.NewProc("CreateRoundRectRgn")
+	pExcludeClipRect        = gdi32.NewProc("ExcludeClipRect")
 	pSelectClipRgn          = gdi32.NewProc("SelectClipRgn")
 
 	dwmapi            = syscall.NewLazyDLL("dwmapi.dll")
@@ -166,31 +201,23 @@ func createUIFont(height int32, weight uintptr) uintptr {
 }
 
 func initSpatialUI(hwnd uintptr) {
-	loadUILanguage()
+	animClock.start()
+	loadUISettings()
+	applyThemePalette()
 	hFontLogo = createUIFont(19, FW_SEMIBOLD)
 	hFontTitle = createUIFont(23, FW_SEMIBOLD)
 	hFontHeading = createUIFont(16, FW_MEDIUM)
 	hFontBody = createUIFont(15, FW_NORMAL)
 	hFontSmall = createUIFont(12, FW_NORMAL)
 	hFontButton = createUIFont(14, FW_MEDIUM)
-	hFontNumber = createUIFont(17, FW_SEMIBOLD)
+	hFontNumber = createUIFont(15, FW_SEMIBOLD)
+	hFontEyebrow = createUIFont(11, FW_SEMIBOLD)
+	hFontValue = createUIFont(18, FW_SEMIBOLD)
 	initSpatialBenchyAsset()
 	hFont = hFontBody
 	hAppIcon, _, _ = pLoadIcon.Call(appInstance, 1)
 	setSpatialTitle()
-	// Rounded native Windows 11 corners. Unsupported attributes are harmless.
-	corner := uint32(2) // DWMWCP_ROUND
-	pDwmSetWindowAttr.Call(hwnd, 33, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
-	dark := uint32(0)
-	pDwmSetWindowAttr.Call(hwnd, 20, uintptr(unsafe.Pointer(&dark)), unsafe.Sizeof(dark))
-	caption := uint32(rgb(247, 249, 253))
-	captionText := uint32(rgb(24, 29, 40))
-	border := uint32(rgb(211, 218, 234))
-	backdrop := uint32(2)
-	pDwmSetWindowAttr.Call(hwnd, 35, uintptr(unsafe.Pointer(&caption)), unsafe.Sizeof(caption))
-	pDwmSetWindowAttr.Call(hwnd, 36, uintptr(unsafe.Pointer(&captionText)), unsafe.Sizeof(captionText))
-	pDwmSetWindowAttr.Call(hwnd, 34, uintptr(unsafe.Pointer(&border)), unsafe.Sizeof(border))
-	pDwmSetWindowAttr.Call(hwnd, 38, uintptr(unsafe.Pointer(&backdrop)), unsafe.Sizeof(backdrop))
+	applyWindowChrome(hwnd)
 	startSpatialAnimation(hwnd)
 }
 
@@ -199,7 +226,12 @@ func cleanupSpatialUI() {
 	mainSpatialBuffer.reset()
 	cleanupSpatialBenchyAsset()
 	cleanupSpatialMaterialSystem()
-	for _, h := range []uintptr{hFontLogo, hFontTitle, hFontHeading, hFontBody, hFontSmall, hFontButton, hFontNumber} {
+	releaseCompositeDC()
+	releaseSolidPens()
+	clearBackdropCache()
+	clearTexturePreviewCache()
+	cleanupStage3D()
+	for _, h := range []uintptr{hFontLogo, hFontTitle, hFontHeading, hFontBody, hFontSmall, hFontButton, hFontNumber, hFontEyebrow, hFontValue} {
 		if h != 0 {
 			pDeleteObject.Call(h)
 		}
@@ -230,11 +262,60 @@ func spatialAnimationActive(hwnd uintptr) bool {
 	return foreground == hwnd
 }
 
+// The only things that animate on their own are the shimmer on an armed call to
+// action and the engine dot while work is in flight. Everything else is static
+// until the pointer moves, so an idle window costs nothing.
+func sceneNeedsAnimationFrame() bool {
+	if app.discovering || app.importing || app.analyzing {
+		return true
+	}
+	// The empty envelope drifts and its gradient flows, so it animates too —
+	// it is only line work, unlike a full mesh re-render.
+	if !stageIsShowingUserModel() {
+		return true
+	}
+	// The shimmer sits in the inspector, not the stage, so it needs a full
+	// frame; it is left to the hover path rather than driving one per tick.
+	// Nothing continuous is on screen: keep painting only until the hover
+	// transitions have finished, then let the window go quiet.
+	return !hoverSettled()
+}
+
 func setSpatialTitle() {
 	setText(mainHwnd, "FlashFit AI")
 }
 
+// Continuous effects live inside the stage, so a frame of the cube turning must
+// not cost a redraw of the sidebar, the inspector and every frosted panel.
+// invalidateStageOnly repaints just that rectangle; the rest of the window is
+// left exactly as it was in the back buffer.
+//
+// Frame-time budget for a stage-only frame: < 8 ms on the reference machine.
+func invalidateStageOnly() {
+	if mainHwnd == 0 || width(spatial.stage) <= 0 {
+		return
+	}
+	stageOnlyFrame = true
+	area := spatial.stage
+	pInvalidateRect.Call(mainHwnd, uintptr(unsafe.Pointer(&area)), 0)
+}
+
+// invalidateChrome repaints everything except the canvas, for changes that
+// cannot touch it: hover, focus, a toolbar state. The canvas keeps whatever it
+// last rendered, which is still correct.
+func invalidateChrome() {
+	if mainHwnd == 0 || !spatialLayoutValid {
+		invalidateSpatial()
+		return
+	}
+	stageOnlyFrame = false
+	sceneSkipStage = true
+	pInvalidateRect.Call(mainHwnd, 0, 0)
+}
+
 func invalidateSpatial() {
+	stageOnlyFrame = false
+	sceneSkipStage = false
 	if mainHwnd != 0 {
 		pInvalidateRect.Call(mainHwnd, 0, 0)
 	}
@@ -251,62 +332,121 @@ func contains(r rect, x, y int32) bool {
 	return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom
 }
 
+func min32(a, b int32) int32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func clamp32(value, low, high int32) int32 {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
+}
+
+// Four floating planes over a lit background: navigation rail, workspace,
+// configuration inspector and a status bar. Every plane keeps a margin, so the
+// background light reads between them instead of behind a single flat sheet.
 func calculateSpatialLayout(w, h int32) spatialRegions {
-	margin := int32(52)
-	if w < 1120 {
-		margin = 30
-	}
-	previewTop := int32(92)
-	previewBottom := h - 250
-	if previewBottom < 450 {
-		previewBottom = 450
-	}
-	previewW := w * 76 / 100
-	if previewW > 1050 {
-		previewW = 1050
-	}
-	if previewW > w-2*margin {
-		previewW = w - 2*margin
-	}
-	previewLeft := (w - previewW) / 2
-	preview := rect{previewLeft, previewTop, previewLeft + previewW, previewBottom}
+	margin := clamp32(w/72, 12, 22)
+	gap := clamp32(w/96, 10, 18)
+	toolbarH := int32(78)
+	statusH := clamp32(h/12, 62, 82)
 
-	cardsTop := preview.Bottom + 20
-	cardsBottom := h - 58
-	if cardsBottom-cardsTop < 150 {
-		cardsTop = cardsBottom - 150
+	sidebarW := clamp32(w*17/100, 168, 240)
+	inspectorW := clamp32(w*29/100, 280, 430)
+	if sidebarW+inspectorW > w-2*margin-2*gap-300 {
+		sidebarW = clamp32(w*15/100, 130, 240)
+		inspectorW = clamp32(w*26/100, 220, 430)
 	}
-	contentW := w - 2*margin
-	gap := int32(14)
-	usable := contentW - 3*gap
-	w1 := usable * 23 / 100
-	w2 := usable * 19 / 100
-	w3 := usable * 30 / 100
-	w4 := usable - w1 - w2 - w3
-	x := margin
-	model := rect{x, cardsTop, x + w1, cardsBottom}
-	x = model.Right + gap
-	filament := rect{x, cardsTop, x + w2, cardsBottom}
-	x = filament.Right + gap
-	quality := rect{x, cardsTop, x + w3, cardsBottom}
-	x = quality.Right + gap
-	open := rect{x, cardsTop, x + w4, cardsBottom}
 
-	qInner := inset(quality, 16)
-	qTop := quality.Bottom - 48
-	qGap := int32(7)
-	qW := (width(qInner) - 2*qGap) / 3
-	fast := rect{qInner.Left, qTop, qInner.Left + qW, quality.Bottom - 13}
-	balanced := rect{fast.Right + qGap, qTop, fast.Right + qGap + qW, quality.Bottom - 13}
-	perfect := rect{balanced.Right + qGap, qTop, qInner.Right, quality.Bottom - 13}
-
-	return spatialRegions{
-		language: rect{w - margin - 64, 20, w - margin, 62},
-		advanced: rect{w - margin - 168, 20, w - margin - 72, 62},
-		device:   rect{w/2 - 180, 18, w/2 + 180, 68},
-		preview:  preview, model: model, filament: filament, quality: quality, open: open,
-		fast: fast, balanced: balanced, perfect: perfect,
+	contentTop := toolbarH
+	contentBottom := h - margin - statusH - gap
+	if contentBottom-contentTop < 240 {
+		contentBottom = contentTop + 240
 	}
+
+	regions := spatialRegions{
+		toolbar: rect{0, 0, w, toolbarH},
+		sidebar: rect{margin, contentTop, margin + sidebarW, contentBottom},
+		status:  rect{margin, contentBottom + gap, w - margin, h - margin},
+	}
+	regions.inspector = rect{w - margin - inspectorW, contentTop, w - margin, contentBottom}
+	regions.workspace = rect{regions.sidebar.Right + gap, contentTop, regions.inspector.Left - gap, contentBottom}
+
+	// Toolbar controls run from the right edge inward.
+	right := w - margin - 6
+	regions.advanced = rect{right - 100, 22, right, 60}
+	regions.language = rect{regions.advanced.Left - 8 - 56, 22, regions.advanced.Left - 8, 60}
+	regions.theme = rect{regions.language.Left - 8 - 40, 22, regions.language.Left - 8, 60}
+	// Two dedicated buttons rather than a system popup: which model is loaded is
+	// a standing choice, so it is shown as a standing control with the active
+	// one lit, instead of hiding the state behind a menu that has to be opened
+	// to be read.
+	aiRight := regions.theme.Left - 10
+	regions.aiHeavy = rect{aiRight - 92, 22, aiRight, 60}
+	regions.aiLight = rect{regions.aiHeavy.Left - 6 - 92, 22, regions.aiHeavy.Left - 6, 60}
+	regions.aiStatus = rect{regions.aiLight.Left - 10 - 132, 22, regions.aiLight.Left - 10, 60}
+
+	// Navigation rail: five destinations, promo card pinned to the bottom.
+	navTop := regions.sidebar.Top + 14
+	navH := int32(52)
+	for i := 0; i < 5; i++ {
+		y := navTop + int32(i)*(navH+4)
+		regions.nav[i] = rect{regions.sidebar.Left + 10, y, regions.sidebar.Right - 10, y + navH}
+	}
+	promoH := clamp32(height(regions.sidebar)/4, 96, 150)
+	regions.promo = rect{regions.sidebar.Left + 10, regions.sidebar.Bottom - 12 - promoH, regions.sidebar.Right - 10, regions.sidebar.Bottom - 12}
+	if regions.promo.Top < regions.nav[4].Bottom+12 {
+		regions.promo = rect{0, 0, 0, 0}
+	}
+
+	// Workspace: canvas with a floating tool strip, dimension pill and drop zone.
+	dropH := int32(78)
+	regions.drop = rect{regions.workspace.Left + 26, regions.workspace.Bottom - 18 - dropH, regions.workspace.Right - 26, regions.workspace.Bottom - 18}
+	regions.dimension = rect{
+		(regions.workspace.Left+regions.workspace.Right)/2 - 105, regions.drop.Top - 46,
+		(regions.workspace.Left+regions.workspace.Right)/2 + 105, regions.drop.Top - 14,
+	}
+	regions.stage = rect{regions.workspace.Left + 8, regions.workspace.Top + 62, regions.workspace.Right - 8, regions.dimension.Top - 6}
+
+	toolTop := regions.stage.Top + height(regions.stage)/2 - 68
+	for i := 0; i < 4; i++ {
+		y := toolTop + int32(i)*34
+		regions.tools[i] = rect{regions.workspace.Left + 18, y, regions.workspace.Left + 52, y + 32}
+	}
+
+	// Inspector: three option cards, segmented quality, plan, gradient CTA.
+	padding := int32(18)
+	left := regions.inspector.Left + padding
+	rightEdge := regions.inspector.Right - padding
+	ctaH := int32(52)
+	regions.open = rect{left, regions.inspector.Bottom - padding - ctaH, rightEdge, regions.inspector.Bottom - padding}
+
+	rowH := clamp32(height(regions.inspector)/8, 66, 84)
+	y := regions.inspector.Top + 46
+	regions.model = rect{left, y, rightEdge, y + rowH}
+	y = regions.model.Bottom + 10
+	regions.printer = rect{left, y, rightEdge, y + rowH}
+	y = regions.printer.Bottom + 10
+	regions.filament = rect{left, y, rightEdge, y + rowH}
+	y = regions.filament.Bottom + 20
+
+	track := rect{left, y + 24, rightEdge, y + 24 + 40}
+	regions.quality = rect{left, y, rightEdge, track.Bottom}
+	segW := width(track) / 3
+	regions.fast = rect{track.Left, track.Top, track.Left + segW, track.Bottom}
+	regions.balanced = rect{regions.fast.Right, track.Top, regions.fast.Right + segW, track.Bottom}
+	regions.perfect = rect{regions.balanced.Right, track.Top, track.Right, track.Bottom}
+
+	regions.plan = rect{left, regions.quality.Bottom + 18, rightEdge, regions.open.Top - 16}
+	regions.stats = rect{regions.status.Right - 400, regions.status.Top, regions.status.Right - 20, regions.status.Bottom}
+	return regions
 }
 
 func brush(color uintptr) uintptr {
@@ -333,12 +473,6 @@ func rounded(hdc uintptr, r rect, radius int32, fill, stroke uintptr) {
 	drawSpatialRoundedMaterial(hdc, r, radius, fill, fill, stroke)
 }
 
-func elevated(hdc uintptr, r rect, radius int32, fill, stroke uintptr) {
-	drawSpatialSoftShadow(hdc, r, radius, 14, 7, rgb(52, 72, 128), 34)
-	drawSpatialSoftShadow(hdc, r, radius, 4, 2, rgb(65, 88, 148), 22)
-	drawSpatialRoundedMaterial(hdc, r, radius, fill, fill, stroke)
-}
-
 func text(hdc uintptr, value string, r rect, font, color, flags uintptr) {
 	if value == "" {
 		return
@@ -352,13 +486,51 @@ func text(hdc uintptr, value string, r rect, font, color, flags uintptr) {
 	pSelectObject.Call(hdc, old)
 }
 
+// Pens are cached rather than created per stroke. The neon envelope alone draws
+// several hundred short segments a frame, and creating plus destroying a GDI
+// pen for each one cost more than the drawing did.
+type penKey struct {
+	color uintptr
+	width int
+}
+
+var solidPenCache = map[penKey]uintptr{}
+
+const solidPenCacheLimit = 512
+
+func cachedPen(color uintptr, lineWidth int) uintptr {
+	key := penKey{color: color, width: lineWidth}
+	if handle, ok := solidPenCache[key]; ok {
+		return handle
+	}
+	if len(solidPenCache) >= solidPenCacheLimit {
+		releaseSolidPens()
+	}
+	handle := pen(PS_SOLID, lineWidth, color)
+	solidPenCache[key] = handle
+	return handle
+}
+
+// Safe to call only when no cached pen is selected into a DC, which is true
+// between paints.
+func releaseSolidPens() {
+	for _, handle := range solidPenCache {
+		if handle != 0 {
+			pDeleteObject.Call(handle)
+		}
+	}
+	solidPenCache = map[penKey]uintptr{}
+}
+
 func line(hdc uintptr, x1, y1, x2, y2 int32, color uintptr, lineWidth int) {
-	p := pen(PS_SOLID, lineWidth, color)
+	p := cachedPen(color, lineWidth)
+	if p == 0 {
+		return
+	}
 	old, _, _ := pSelectObject.Call(hdc, p)
 	pMoveToEx.Call(hdc, i32arg(x1), i32arg(y1), 0)
 	pLineTo.Call(hdc, i32arg(x2), i32arg(y2))
 	pSelectObject.Call(hdc, old)
-	pDeleteObject.Call(p)
 }
 
 func circle(hdc uintptr, centerX, centerY, radius int32, fill, stroke uintptr) {
@@ -369,57 +541,74 @@ func circle(hdc uintptr, centerX, centerY, radius int32, fill, stroke uintptr) {
 	})
 }
 
-func drawNumber(hdc uintptr, n string, card rect) {
-	cx, cy := card.Left+30, card.Top+30
-	bubble := rect{cx - 15, cy - 15, cx + 15, cy + 15}
-	drawSpatialSoftShadow(hdc, bubble, 15, 7, 3, rgb(66, 78, 150), 38)
-	drawSpatialRoundedMaterial(hdc, bubble, 15, rgb(102, 133, 255), rgb(91, 77, 243), rgb(137, 157, 255))
-	text(hdc, n, bubble, hFontNumber, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-}
-
-func drawLogo(hdc uintptr, w int32) {
-	if hAppIcon != 0 {
-		pDrawIconEx.Call(hdc, 24, 25, hAppIcon, 30, 30, 0, 0, 3)
-	} else {
-		drawSpatialRoundedMaterial(hdc, rect{23, 24, 55, 56}, 10, rgb(105, 139, 255), rgb(91, 76, 244), rgb(143, 162, 255))
-		text(hdc, "F", rect{23, 24, 55, 56}, hFontLogo, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	}
-	text(hdc, "FlashFit AI", rect{63, 20, 260, 62}, hFontLogo, rgb(24, 28, 38), DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	_ = w
+// Small caps-style section label used at the top of every plane.
+func eyebrow(hdc uintptr, value string, r rect, flags uintptr) {
+	text(hdc, strings.ToUpper(value), r, hFontEyebrow, th.textMuted, flags|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func drawPrinterIcon(hdc uintptr, cx, cy int32, color uintptr) {
 	line(hdc, cx-8, cy-7, cx+8, cy-7, color, 2)
 	line(hdc, cx-8, cy-7, cx-8, cy-1, color, 2)
 	line(hdc, cx+8, cy-7, cx+8, cy-1, color, 2)
-	rounded(hdc, rect{cx - 12, cy - 2, cx + 12, cy + 9}, 4, rgb(238, 242, 250), color)
-	rounded(hdc, rect{cx - 8, cy + 4, cx + 8, cy + 12}, 3, rgb(251, 252, 255), color)
+	rounded(hdc, rect{cx - 12, cy - 2, cx + 12, cy + 9}, 4, th.sunken, color)
+	rounded(hdc, rect{cx - 8, cy + 4, cx + 8, cy + 12}, 3, th.surface, color)
 	circle(hdc, cx+7, cy+2, 1, color, color)
 }
 
-func drawDevicePill(hdc uintptr) {
-	r := spatial.device
-	drawSpatialSoftShadow(hdc, r, 25, 15, 8, rgb(54, 69, 119), 30)
-	drawSpatialSoftShadow(hdc, r, 25, 4, 2, rgb(64, 84, 140), 18)
-	drawSpatialRoundedMaterial(hdc, r, 25, rgb(255, 255, 255), rgb(246, 248, 253), rgb(228, 233, 243))
-	drawPrinterIcon(hdc, r.Left+36, (r.Top+r.Bottom)/2, rgb(70, 82, 110))
-	text(hdc, selectedPrinterLabel()+"   |   "+selectedNozzleLabel(), rect{r.Left + 62, r.Top, r.Right - 45, r.Bottom}, hFontBody, rgb(35, 40, 53), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, "⌄", rect{r.Right - 42, r.Top - 2, r.Right - 17, r.Bottom}, hFontHeading, rgb(49, 56, 73), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+func drawSpoolIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	circle(hdc, cx, cy, 10, th.sunken, color)
+	circle(hdc, cx, cy, 4, th.surface, color)
+	line(hdc, cx-10, cy+11, cx+10, cy+11, color, 2)
 }
 
-func drawPerspectiveGrid(hdc uintptr, r rect) {
-	horizon := r.Top + height(r)*56/100
-	centerX := (r.Left + r.Right) / 2
-	for i := int32(0); i <= 8; i++ {
-		t := float64(i) / 8
-		y := horizon + int32(float64(r.Bottom-horizon)*math.Pow(t, 1.7))
-		shade := uint8(230 + int(t*7))
-		line(hdc, r.Left, y, r.Right, y, rgb(shade, shade+3, 247), 1)
+func drawSlidersIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	for i, off := range []int32{-7, 0, 7} {
+		line(hdc, cx-10, cy+off, cx+10, cy+off, color, 2)
+		knob := []int32{3, -4, 6}[i]
+		circle(hdc, cx+knob, cy+off, 2, th.surface, color)
 	}
-	for i := int32(-7); i <= 7; i++ {
-		topX := centerX + i*width(r)/35
-		bottomX := centerX + i*width(r)/14
-		line(hdc, topX, horizon, bottomX, r.Bottom, rgb(231, 235, 247), 1)
+}
+
+func drawRocketIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	pts := []point{{cx, cy - 11}, {cx + 7, cy + 2}, {cx, cy + 8}, {cx - 7, cy + 2}}
+	b, p := brush(color), pen(PS_SOLID, 1, color)
+	withObjects(hdc, b, p, func() { pPolygon.Call(hdc, uintptr(unsafe.Pointer(&pts[0])), uintptr(len(pts))) })
+	circle(hdc, cx, cy-3, 3, th.surface, color)
+	line(hdc, cx-4, cy+9, cx+4, cy+9, color, 2)
+}
+
+func drawStepIcon(hdc uintptr, cx, cy int32, index int, color uintptr) {
+	switch index {
+	case 0:
+		line(hdc, cx-10, cy-6, cx-2, cy-6, color, 2)
+		line(hdc, cx-2, cy-6, cx+1, cy-3, color, 2)
+		line(hdc, cx+1, cy-3, cx+10, cy-3, color, 2)
+		line(hdc, cx-10, cy-6, cx-10, cy+8, color, 2)
+		line(hdc, cx-10, cy+8, cx+10, cy+8, color, 2)
+		line(hdc, cx+10, cy+8, cx+10, cy-3, color, 2)
+	case 1:
+		drawSpoolIcon(hdc, cx, cy-1, color)
+	case 2:
+		drawSlidersIcon(hdc, cx, cy, color)
+	default:
+		drawRocketIcon(hdc, cx, cy, color)
+	}
+}
+
+func drawMoonIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	circle(hdc, cx, cy, 8, color, color)
+	circle(hdc, cx+4, cy-4, 7, th.surface, th.surface)
+}
+
+func drawSunIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	circle(hdc, cx, cy, 5, color, color)
+	for i := 0; i < 8; i++ {
+		a := float64(i) * math.Pi / 4
+		x1 := cx + int32(math.Cos(a)*8)
+		y1 := cy + int32(math.Sin(a)*8)
+		x2 := cx + int32(math.Cos(a)*11)
+		y2 := cy + int32(math.Sin(a)*11)
+		line(hdc, x1, y1, x2, y2, color, 2)
 	}
 }
 
@@ -432,8 +621,262 @@ func drawUploadIcon(hdc uintptr, cx, cy int32, color uintptr) {
 	line(hdc, cx+8, cy+9, cx+8, cy+3, color, 2)
 }
 
+func drawChevron(hdc uintptr, cx, cy int32, color uintptr) {
+	line(hdc, cx-3, cy-4, cx+2, cy, color, 2)
+	line(hdc, cx+2, cy, cx-3, cy+4, color, 2)
+}
+
+func drawHeader(hdc uintptr, w int32) {
+	left := spatial.sidebar.Left
+	tile := rect{left, 20, left + 42, 62}
+	shade(hdc, tile, 13, 10, 5, 40)
+	accentFill(hdc, tile, 13)
+	if hAppIcon != 0 {
+		pDrawIconEx.Call(hdc, uintptr(uint32(tile.Left+7)), uintptr(uint32(tile.Top+7)), hAppIcon, 28, 28, 0, 0, 3)
+	} else {
+		text(hdc, "F", tile, hFontLogo, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	}
+	text(hdc, "FlashFit AI", rect{tile.Right + 14, 18, tile.Right + 260, 44}, hFontLogo, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(hdc, "v"+shortVersion(), rect{tile.Right + 15, 42, tile.Right + 260, 62}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	drawAIStatus(hdc)
+
+	themeButton := drawHeaderButton(hdc, spatial.theme, hoverTheme)
+	iconColor := mixColor(th.textSecondary, th.accent, hoverOf(hoverTheme))
+	if th.dark {
+		drawSunIcon(hdc, (themeButton.Left+themeButton.Right)/2, (themeButton.Top+themeButton.Bottom)/2, iconColor)
+	} else {
+		drawMoonIcon(hdc, (themeButton.Left+themeButton.Right)/2, (themeButton.Top+themeButton.Bottom)/2, iconColor)
+	}
+
+	languageButton := drawHeaderButton(hdc, spatial.language, hoverLanguage)
+	text(hdc, strings.ToUpper(uiLanguage), rect{languageButton.Left, languageButton.Top, languageButton.Right - 14, languageButton.Bottom}, hFontButton, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	drawChevronDown(hdc, languageButton.Right-16, (languageButton.Top+languageButton.Bottom)/2, th.textMuted)
+
+	advancedButton := drawHeaderButton(hdc, spatial.advanced, hoverAdvanced)
+	text(hdc, tr("advanced"), inset(advancedButton, 8), hFontButton, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	_ = w
+}
+
+// A standing indicator for the model: what state it is in, at a glance, without
+// having to open anything. Four states, each with its own colour and a dot that
+// only animates while the model is actually working.
+func drawAIStatus(hdc uintptr) {
+	r := spatial.aiStatus
+	if width(r) <= 0 {
+		return
+	}
+	ready, starting, failure := advisorServer.status()
+	thinking := ready && shared.AdvisorIsThinking()
+
+	var dot uintptr
+	var label string
+	switch {
+	case thinking:
+		dot, label = th.accent, tr("aiThinking")
+	case ready:
+		dot, label = th.okColor, tr("aiOnline")
+	case starting:
+		dot, label = th.warnColor, tr("aiLoading")
+	case failure != "":
+		dot, label = th.textMuted, tr("aiOffline")
+	default:
+		dot, label = th.textMuted, tr("aiOffline")
+	}
+
+	shade(hdc, r, height(r)/2, 8, 3, 18)
+	drawSpatialRoundedMaterial(hdc, r, height(r)/2, th.surface, th.surfaceAlt, th.stroke)
+
+	cx := r.Left + 20
+	cy := (r.Top + r.Bottom) / 2
+	if thinking || starting {
+		// Breathing halo: the only part that moves, so a still dot always means
+		// "not working".
+		glow(hdc, cx, cy, 16, 16, dot, uint8(30+animPulse(1.2)*70))
+	}
+	circle(hdc, cx, cy, 5, dot, dot)
+	text(hdc, label, rect{cx + 12, r.Top, r.Right - 12, r.Bottom}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+
+	drawAISelector(hdc)
+}
+
+// The two model buttons. The heavier one is only offered when its weights are
+// actually present, so the interface never advertises a choice that would fail.
+func drawAISelector(hdc uintptr) {
+	heavy, hasHeavy := heaviestAvailableModel()
+	usingHeavy := hasHeavy && strings.EqualFold(advisorSelectedModel, heavy.Path)
+
+	drawAIChoice(hdc, spatial.aiLight, tr("aiLightShort"), !usingHeavy, true, hoverAILight)
+	label := tr("aiHeavyShort")
+	if !hasHeavy {
+		label = tr("aiHeavyMissing")
+	}
+	drawAIChoice(hdc, spatial.aiHeavy, label, usingHeavy, hasHeavy, hoverAIHeavy)
+}
+
+func drawAIChoice(hdc uintptr, r rect, label string, active, available bool, id int) {
+	if width(r) <= 0 {
+		return
+	}
+	radius := height(r) / 2
+	switch {
+	case active:
+		shade(hdc, r, radius, 9, 4, 34)
+		accentFill(hdc, r, radius)
+		text(hdc, label, inset(r, 6), hFontSmall, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		return
+	case !available:
+		// Shown but plainly inert, so the option is discoverable without
+		// pretending it can be used.
+		drawSpatialRoundedMaterial(hdc, r, radius, th.sunken, th.sunkenAlt, th.strokeSoft)
+		text(hdc, label, inset(r, 6), hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		return
+	}
+	amount := hoverOf(id)
+	drawSpatialRoundedMaterial(hdc, r, radius,
+		mixColor(th.surface, th.accentTintA, amount),
+		mixColor(th.surfaceAlt, th.accentTintB, amount),
+		mixColor(th.stroke, th.accentStroke, amount))
+	text(hdc, label, inset(r, 6), hFontSmall, th.textSecondary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+}
+
+// The build string carries its channel for logs and crash reports; the chrome
+// only needs the number.
+func shortVersion() string {
+	if index := strings.IndexAny(buildVersion, "-+"); index > 0 {
+		return buildVersion[:index]
+	}
+	return buildVersion
+}
+
+func drawChevronDown(hdc uintptr, cx, cy int32, color uintptr) {
+	line(hdc, cx-4, cy-2, cx, cy+2, color, 2)
+	line(hdc, cx, cy+2, cx+4, cy-2, color, 2)
+}
+
+// Toolbar buttons are standing chips: rounded to their own height so a square
+// one reads as a circle, lifting slightly under the pointer.
+func drawHeaderButton(hdc uintptr, r rect, id int) rect {
+	r = lift(r, id)
+	radius := height(r) / 2
+	shade(hdc, r, radius, 9, 4, hoverShadow(id, 22))
+	amount := hoverOf(id)
+	drawSpatialRoundedMaterial(hdc, r, radius,
+		mixColor(th.surface, th.accentTintA, amount),
+		mixColor(th.surfaceAlt, th.accentTintB, amount),
+		mixColor(th.stroke, th.accentStroke, amount))
+	return r
+}
+
+// The model canvas, recessed inside the workspace card.
+func drawStage(hdc uintptr) {
+	r := spatial.stage
+	drawSpatialRoundedMaterial(hdc, r, 16, th.stageTop, th.stageBottom, th.stageStroke)
+
+	saved, _, _ := pSaveDC.Call(hdc)
+	region, _, _ := pCreateRoundRectRgn.Call(i32arg(r.Left), i32arg(r.Top), i32arg(r.Right+1), i32arg(r.Bottom+1), 32, 32)
+	if region != 0 {
+		pSelectClipRgn.Call(hdc, region)
+	}
+
+	// Colour pooled into the canvas. Without these the stage is a flat void, and
+	// they are what gives the depth its atmosphere.
+	w, h := width(r), height(r)
+	glow(hdc, r.Left+w*30/100, r.Top+h*30/100, w*58/100, h*66/100, th.glowCool, 92)
+	glow(hdc, r.Left+w*78/100, r.Top+h*22/100, w*46/100, h*52/100, th.glowWarm, 78)
+	glow(hdc, r.Left+w*58/100, r.Bottom-h*8/100, w*52/100, h*40/100, th.glowMint, 54)
+	glow(hdc, (r.Left+r.Right)/2, r.Top+h*46/100, w*30/100, h*34/100, th.glowCool, 60)
+
+	inner := inset(r, 8)
+	if stageIsShowingUserModel() {
+		// The empty state draws its own plate grid, so the horizon floor is only
+		// context for a loaded part.
+		drawPerspectiveFloor(hdc, rect{inner.Left, inner.Top + height(inner)*42/100, inner.Right, inner.Bottom})
+	}
+
+	modelCX := (r.Left + r.Right) / 2
+	viewport := rect{inner.Left, inner.Top + 14, inner.Right, spatial.drop.Top - 14}
+	if stageIsShowingUserModel() {
+		// Contact shadow: tight and dark under the part, widening outward.
+		groundY := viewport.Bottom - height(viewport)*16/100
+		glow(hdc, modelCX, groundY, width(r)*15/100, height(r)*5/100, th.shadow, 62)
+		glow(hdc, modelCX, groundY, width(r)*26/100, height(r)*9/100, th.shadow, 26)
+		drawStageModel(hdc, viewport)
+	} else {
+		drawStagePlate(hdc, viewport)
+	}
+
+	drawStageVignette(hdc, r)
+
+	if region != 0 {
+		pDeleteObject.Call(region)
+	}
+	if saved != 0 {
+		pRestoreDC.Call(hdc, saved)
+	}
+
+	text(hdc, tr("viewerHint"), rect{r.Left + 18, r.Bottom - 26, r.Right - 18, r.Bottom - 8}, hFontSmall, th.textMuted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+}
+
+// Darkened corners pull the eye to the centre of the plate.
+func drawStageVignette(hdc uintptr, r rect) {
+	corner := min32(width(r), height(r)) * 55 / 100
+	strength := uint8(26)
+	if th.dark {
+		strength = 46
+	}
+	for _, c := range [4][2]int32{
+		{r.Left, r.Top}, {r.Right, r.Top},
+		{r.Left, r.Bottom}, {r.Right, r.Bottom},
+	} {
+		glow(hdc, c[0], c[1], corner, corner, th.shadow, strength)
+	}
+}
+
+func drawPerspectiveFloor(hdc uintptr, r rect) {
+	horizon := r.Top
+	centerX := (r.Left + r.Right) / 2
+	for i := int32(0); i <= 9; i++ {
+		t := float64(i) / 9
+		y := horizon + int32(float64(r.Bottom-horizon)*math.Pow(t, 1.75))
+		color := th.stageGrid
+		if i%3 == 0 {
+			color = th.stageGridHi
+		}
+		line(hdc, r.Left, y, r.Right, y, color, 1)
+	}
+	for i := int32(-8); i <= 8; i++ {
+		topX := centerX + i*width(r)/40
+		bottomX := centerX + i*width(r)/11
+		color := th.stageGrid
+		if i == 0 {
+			color = th.stageGridHi
+		}
+		line(hdc, topX, horizon, bottomX, r.Bottom, color, 1)
+	}
+}
+
+func drawDropPill(hdc uintptr, r rect) {
+	shade(hdc, r, 26, 14, 7, 28)
+	card(hdc, r, 26)
+	if app.modelPath == "" {
+		drawDashedFrame(hdc, inset(r, 6))
+		drawUploadIcon(hdc, r.Left+34, (r.Top+r.Bottom)/2, th.accent)
+		text(hdc, tr("dropTitle"), rect{r.Left + 58, r.Top + 9, r.Right - 18, r.Top + 33}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(hdc, tr("dropSubtitle"), rect{r.Left + 58, r.Top + 30, r.Right - 18, r.Bottom - 8}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+		return
+	}
+	name := filepath.Base(app.modelPath)
+	subtitle := tr("analyzing")
+	if app.analysis != nil {
+		a := *app.analysis
+		subtitle = trf("analysisSummary", a.InputFormat, a.TriangleCount, a.Extents[0], a.Extents[1], a.Extents[2])
+	}
+	text(hdc, name, rect{r.Left + 20, r.Top + 9, r.Right - 20, r.Top + 33}, hFontBody, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, subtitle, rect{r.Left + 16, r.Top + 30, r.Right - 16, r.Bottom - 8}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+}
+
 func drawDashedFrame(hdc uintptr, r rect) {
-	dash := pen(PS_DASH, 1, rgb(132, 151, 234))
+	dash := pen(PS_DASH, 1, th.accentStroke)
 	nullBrush, _, _ := pGetStockObject.Call(NULL_BRUSH)
 	oldPen, _, _ := pSelectObject.Call(hdc, dash)
 	oldBrush, _, _ := pSelectObject.Call(hdc, nullBrush)
@@ -443,161 +886,332 @@ func drawDashedFrame(hdc uintptr, r rect) {
 	pDeleteObject.Call(dash)
 }
 
-func spatialFloatOffset() int32 {
-	return int32(math.Round(math.Sin(float64(spatialAnimationTick)*0.065) * 2.0))
+
+// The inspector: one flush panel, hairline-separated rows, no nested cards.
+func drawInspector(hdc uintptr) {
+	panel := spatial.inspector
+	background := brush(th.surface)
+	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&panel)), background)
+	pDeleteObject.Call(background)
+	line(hdc, panel.Left, panel.Top, panel.Left, panel.Bottom, th.strokeSoft, 1)
+	eyebrow(hdc, tr("inspectorTitle"), rect{panel.Left + 16, panel.Top + 14, panel.Right - 16, panel.Top + 36}, DT_LEFT|DT_VCENTER)
+
+	drawModelRow(hdc, spatial.model)
+	drawPrinterSlot(hdc, spatial.printer)
+	drawFilamentSlot(hdc, spatial.filament)
+	drawQualitySlot(hdc, spatial.quality)
+	drawPlanCard(hdc, spatial.plan)
+	drawPrimaryAction(hdc, spatial.open)
 }
 
-func drawPreview(hdc uintptr) {
-	r := spatial.preview
-	drawSpatialSoftShadow(hdc, r, 30, 24, 12, rgb(55, 72, 125), 31)
-	drawSpatialSoftShadow(hdc, r, 30, 6, 2, rgb(78, 99, 159), 17)
-	drawSpatialRoundedMaterial(hdc, r, 30, rgb(255, 255, 255), rgb(244, 247, 253), rgb(218, 225, 239))
-
-	inner := inset(r, 28)
-	drawSpatialGlow(hdc, (r.Left+r.Right)/2, r.Top+height(r)*42/100, width(r)*34/100, height(r)*45/100, rgb(181, 203, 255), 34)
-	drawSpatialGlow(hdc, r.Left+width(r)*69/100, r.Top+height(r)*35/100, width(r)*18/100, height(r)*30/100, rgb(219, 200, 255), 24)
-	drawPerspectiveGrid(hdc, rect{inner.Left, inner.Top + 20, inner.Right, inner.Bottom - 4})
-
-	frameW := width(inner) * 62 / 100
-	frame := rect{(r.Left + r.Right - frameW) / 2, inner.Top + 10, (r.Left + r.Right + frameW) / 2, inner.Bottom - 18}
-	drawDashedFrame(hdc, frame)
-
-	modelCX := (r.Left + r.Right) / 2
-	modelCY := r.Top + height(r)*45/100 + spatialFloatOffset()
-	drawSpatialGlow(hdc, modelCX, modelCY+height(r)*22/100, width(r)*21/100, height(r)*12/100, rgb(74, 85, 123), 20)
-	modelSize := min32(122, height(r)*31/100)
-	if !drawSpatialBenchyAsset(hdc, modelCX, modelCY, modelSize) {
-		drawBenchy(hdc, modelCX, modelCY, modelSize)
-	}
-
-	labelW := min32(430, width(r)*54/100)
-	labelR := rect{(r.Left + r.Right - labelW) / 2, r.Bottom - 70, (r.Left + r.Right + labelW) / 2, r.Bottom - 22}
-	drawSpatialSoftShadow(hdc, labelR, 24, 13, 7, rgb(62, 76, 125), 29)
-	drawSpatialRoundedMaterial(hdc, labelR, 24, rgb(255, 255, 255), rgb(245, 248, 253), rgb(226, 231, 241))
-	if app.modelPath == "" {
-		drawUploadIcon(hdc, labelR.Left+37, (labelR.Top+labelR.Bottom)/2, rgb(74, 112, 241))
-		text(hdc, tr("dropTitle"), rect{labelR.Left + 64, labelR.Top + 3, labelR.Right - 18, labelR.Top + 27}, hFontBody, rgb(48, 57, 77), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-		text(hdc, tr("dropSubtitle"), rect{labelR.Left + 64, labelR.Top + 23, labelR.Right - 18, labelR.Bottom - 2}, hFontSmall, rgb(105, 115, 137), DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	} else {
-		name := filepath.Base(app.modelPath)
-		text(hdc, name, rect{labelR.Left + 20, labelR.Top + 3, labelR.Right - 20, labelR.Top + 27}, hFontBody, rgb(38, 48, 70), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-		subtitle := tr("analyzing")
-		if app.analysis != nil {
-			a := *app.analysis
-			subtitle = trf("analysisSummary", a.InputFormat, a.TriangleCount, a.Extents[0], a.Extents[1], a.Extents[2])
-		}
-		text(hdc, subtitle, rect{labelR.Left + 16, labelR.Top + 23, labelR.Right - 16, labelR.Bottom - 2}, hFontSmall, rgb(96, 108, 133), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	}
-}
-
-func min32(a, b int32) int32 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func drawBenchy(hdc uintptr, cx, cy, size int32) {
-	blue := rgb(99, 118, 236)
-	soft := rgb(225, 233, 254)
-	// Soft translucent-looking silhouette made from layered native GDI shapes.
-	pts := []point{{cx - size, cy + size/3}, {cx + size, cy + size/3}, {cx + size*3/4, cy + size*2/3}, {cx - size*2/3, cy + size*2/3}}
-	b := brush(soft)
-	p := pen(PS_SOLID, 3, blue)
-	withObjects(hdc, b, p, func() { pPolygon.Call(hdc, uintptr(unsafe.Pointer(&pts[0])), uintptr(len(pts))) })
-	rounded(hdc, rect{cx - size/3, cy - size/2, cx + size/3, cy + size/3}, 10, rgb(239, 244, 255), blue)
-	line(hdc, cx-size/3, cy-size/6, cx+size/3, cy-size/6, blue, 2)
-	circle(hdc, cx-size/8, cy-size/3, size/12, rgb(248, 250, 255), blue)
-	circle(hdc, cx+size/3, cy+size/2, size/12, rgb(248, 250, 255), blue)
-	line(hdc, cx-size/3, cy-size/2, cx+size/2, cy-size/2, blue, 3)
-	line(hdc, cx, cy-size/2, cx, cy-size*3/4, blue, 3)
-	line(hdc, cx-size/8, cy-size*3/4, cx+size/8, cy-size*3/4, blue, 3)
-}
-
-func drawCardIcon(hdc uintptr, card rect, kind int) {
-	cx, cy := (card.Left+card.Right)/2, card.Top+54
-	orb := rect{cx - 27, cy - 27, cx + 27, cy + 27}
-	drawSpatialSoftShadow(hdc, orb, 27, 10, 5, rgb(57, 75, 130), 27)
-	drawSpatialRoundedMaterial(hdc, orb, 27, rgb(255, 255, 255), rgb(241, 245, 253), rgb(230, 234, 244))
-	blue := rgb(76, 111, 242)
-	switch kind {
-	case 1:
-		line(hdc, cx-12, cy-7, cx-3, cy-7, blue, 2)
-		line(hdc, cx-3, cy-7, cx+1, cy-3, blue, 2)
-		line(hdc, cx+1, cy-3, cx+12, cy-3, blue, 2)
-		line(hdc, cx-12, cy-7, cx-12, cy+10, blue, 2)
-		line(hdc, cx-12, cy+10, cx+12, cy+10, blue, 2)
-		line(hdc, cx+12, cy+10, cx+12, cy-3, blue, 2)
-	case 2:
-		circle(hdc, cx, cy-7, 11, rgb(244, 247, 255), blue)
-		circle(hdc, cx, cy-7, 3, rgb(255, 255, 255), blue)
-		line(hdc, cx-11, cy-2, cx-11, cy+9, blue, 2)
-		line(hdc, cx+11, cy-2, cx+11, cy+9, blue, 2)
-		line(hdc, cx-11, cy+1, cx+11, cy+1, blue, 2)
-		line(hdc, cx-11, cy+5, cx+11, cy+5, blue, 2)
-		line(hdc, cx-11, cy+9, cx+11, cy+9, blue, 2)
-	case 3:
-		for i, off := range []int32{-9, 0, 9} {
-			line(hdc, cx-13, cy+off, cx+13, cy+off, blue, 2)
-			knob := []int32{4, -5, 7}[i]
-			circle(hdc, cx+knob, cy+off, 3, rgb(255, 255, 255), blue)
-		}
-	case 4:
-		ptsA := []point{{cx - 11, cy}, {cx - 3, cy - 9}, {cx + 5, cy}, {cx - 3, cy + 9}}
-		ptsB := []point{{cx + 3, cy + 7}, {cx + 9, cy + 1}, {cx + 15, cy + 7}, {cx + 9, cy + 13}}
-		b, p := brush(blue), pen(PS_SOLID, 1, blue)
-		withObjects(hdc, b, p, func() {
-			pPolygon.Call(hdc, uintptr(unsafe.Pointer(&ptsA[0])), uintptr(len(ptsA)))
-			pPolygon.Call(hdc, uintptr(unsafe.Pointer(&ptsB[0])), uintptr(len(ptsB)))
-		})
-	}
-}
-
-func drawActionCard(hdc uintptr, card rect, number, titleValue string, kind int) {
-	drawSpatialSoftShadow(hdc, card, 24, 17, 9, rgb(57, 72, 125), 27)
-	drawSpatialSoftShadow(hdc, card, 24, 4, 2, rgb(77, 96, 151), 15)
-	drawSpatialRoundedMaterial(hdc, card, 24, rgb(255, 255, 255), rgb(246, 248, 252), rgb(225, 230, 241))
-	drawNumber(hdc, number, card)
-	drawCardIcon(hdc, card, kind)
-	text(hdc, titleValue, rect{card.Left + 16, card.Top + 83, card.Right - 16, card.Top + 116}, hFontHeading, rgb(30, 35, 48), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-}
-
-func drawActions(hdc uintptr) {
-	drawActionCard(hdc, spatial.model, "1", tr("stepModel"), 1)
-	modelText := tr("chooseModel")
+func drawModelRow(hdc uintptr, r rect) {
+	value := tr("chooseModel")
 	if app.modelPath != "" {
-		modelText = filepath.Base(app.modelPath)
+		value = filepath.Base(app.modelPath)
 	}
-	text(hdc, modelText, rect{spatial.model.Left + 18, spatial.model.Top + 116, spatial.model.Right - 18, spatial.model.Bottom - 12}, hFontSmall, rgb(93, 102, 124), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-
-	drawActionCard(hdc, spatial.filament, "2", tr("stepFilament"), 2)
-	filText := tr("noFilament")
-	if f, ok := selectedFilament(); ok {
-		filText = "✓  " + f.Material
+	meta := ""
+	if app.analysis != nil {
+		meta = fmt.Sprintf("%s · %d ▲", app.analysis.InputFormat, app.analysis.TriangleCount)
 	}
-	chip := rect{spatial.filament.Left + 22, spatial.filament.Bottom - 47, spatial.filament.Right - 22, spatial.filament.Bottom - 14}
-	drawSpatialRoundedMaterial(hdc, chip, 17, rgb(251, 252, 255), rgb(241, 245, 253), rgb(105, 126, 238))
-	text(hdc, filText, inset(chip, 7), hFontSmall, rgb(65, 83, 208), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	drawSelectSlot(hdc, r, tr("stepModel"), value, meta, drawFileIcon, app.modelPath != "", hoverModel)
+}
 
-	drawActionCard(hdc, spatial.quality, "3", tr("stepQuality"), 3)
-	drawQualityChoice(hdc, spatial.fast, "low", tr("qualityFast"))
-	drawQualityChoice(hdc, spatial.balanced, "balanced", tr("qualityBalanced"))
-	drawQualityChoice(hdc, spatial.perfect, "perfect", tr("qualityPerfect"))
-	if app.quality == "perfect" {
-		text(hdc, "✦  "+currentTextureTitle(), rect{spatial.quality.Left + 18, spatial.quality.Top + 112, spatial.quality.Right - 18, spatial.quality.Bottom - 53}, hFontSmall, rgb(83, 92, 172), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+func drawFileIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	line(hdc, cx-7, cy-9, cx+3, cy-9, color, 2)
+	line(hdc, cx-7, cy-9, cx-7, cy+9, color, 2)
+	line(hdc, cx-7, cy+9, cx+7, cy+9, color, 2)
+	line(hdc, cx+7, cy+9, cx+7, cy-5, color, 2)
+	line(hdc, cx+3, cy-9, cx+7, cy-5, color, 2)
+}
+
+type modelCheck struct {
+	label  string
+	detail string
+	level  int // 0 pass, 1 advisory, 2 blocking
+}
+
+// Concrete, actionable findings about the loaded mesh. "Something is wrong" is
+// not useful on its own; each row names the property and what it implies.
+func modelChecks() []modelCheck {
+	if app.analysis == nil {
+		return nil
 	}
+	a := *app.analysis
+	checks := make([]modelCheck, 0, 4)
 
-	drawActionCard(hdc, spatial.open, "4", tr("stepOpen"), 4)
-	button := rect{spatial.open.Left + 17, spatial.open.Bottom - 52, spatial.open.Right - 17, spatial.open.Bottom - 14}
-	if app.ready && !app.importing {
-		drawSpatialSoftShadow(hdc, button, 19, 10, 5, rgb(79, 71, 219), 45)
-		drawSpatialRoundedMaterial(hdc, button, 19, rgb(74, 144, 255), rgb(109, 70, 242), rgb(124, 146, 255))
-		drawButtonShimmer(hdc, button)
-		text(hdc, tr("openFlash")+"  ›", inset(button, 6), hFontButton, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	// Mesh defects are advisory: the slicer repairs them on load, and blocking
+	// on them made ordinary downloaded models unusable. Only a mesh broken in
+	// bulk is fatal, and that is refused before reaching here.
+	mesh := modelCheck{label: tr("checkMesh"), detail: tr("checkPass")}
+	switch {
+	case a.DegenerateFaces > 0:
+		mesh.level, mesh.detail = 1, trf("checkMeshDegenerate", a.DegenerateFaces)
+	case !a.Watertight:
+		mesh.level, mesh.detail = 1, tr("checkMeshOpen")
+	}
+	checks = append(checks, mesh)
+
+	volume := modelCheck{label: tr("checkVolume"), detail: tr("checkPass")}
+	if printer, ok := selectedPrinter(); ok && printer.BuildVolume[0] > 0 {
+		for axis := 0; axis < 3; axis++ {
+			if a.Extents[axis] > printer.BuildVolume[axis] {
+				volume.level = 2
+				volume.detail = trf("checkVolumeOver", a.Extents[axis]-printer.BuildVolume[axis])
+				break
+			}
+		}
 	} else {
-		drawSpatialRoundedMaterial(hdc, button, 19, rgb(238, 241, 248), rgb(226, 231, 241), rgb(218, 224, 235))
-		text(hdc, tr("openFlash"), inset(button, 6), hFontButton, rgb(137, 148, 171), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		volume.level, volume.detail = 1, tr("checkVolumeUnknown")
 	}
+	checks = append(checks, volume)
+
+	overhang := modelCheck{label: tr("checkOverhang"), detail: tr("supportsOff")}
+	if a.SupportSuggested {
+		overhang.level, overhang.detail = 1, tr("supportsOn")
+	}
+	checks = append(checks, overhang)
+
+	adhesion := modelCheck{label: tr("checkAdhesion"), detail: tr("checkPass")}
+	if a.BrimSuggested || a.ThinOrTall {
+		adhesion.level, adhesion.detail = 1, tr("checkAdhesionBrim")
+	}
+	checks = append(checks, adhesion)
+
+	// The model's contribution is reported, never silent: the user sees what it
+	// thought the part was and whether the veto let its advice through.
+	if check, ok := advisorCheck(); ok {
+		checks = append(checks, check)
+	}
+	// The dry run over the finished profile: predicted defects, before the plate.
+	checks = append(checks, printReadinessChecks()...)
+	return checks
+}
+
+// printReadinessChecks turns the predicted defects into rows. When nothing is
+// predicted it says so, because "no warnings" and "not checked yet" look the
+// same otherwise.
+func printReadinessChecks() []modelCheck {
+	readiness := shared.LastPrintReadiness
+	if app.recommendation == nil {
+		return nil
+	}
+	if len(readiness.Issues) == 0 {
+		return []modelCheck{{label: tr("checkSimulation"), detail: tr("checkSimulationClear"), level: 0}}
+	}
+	rows := make([]modelCheck, 0, len(readiness.Issues))
+	for _, issue := range readiness.Issues {
+		level := 1
+		if issue.Severity >= 2 {
+			level = 2
+		}
+		rows = append(rows, modelCheck{label: tr(issue.Key), detail: issue.Detail, level: level})
+	}
+	return rows
+}
+
+func advisorCheck() (modelCheck, bool) {
+	ready, starting, failure := advisorServer.status()
+	switch {
+	case starting:
+		return modelCheck{label: tr("checkAI"), detail: tr("checkAILoading"), level: 1}, true
+	case !ready:
+		if failure != "" {
+			return modelCheck{label: tr("checkAI"), detail: tr("checkAIOff"), level: 0}, true
+		}
+		return modelCheck{}, false
+	}
+	outcome := shared.LastAdvisorOutcome
+	if !outcome.Used {
+		return modelCheck{label: tr("checkAI"), detail: tr("checkAIReady"), level: 0}, true
+	}
+	if outcome.Accepted {
+		detail := tr("checkAIApplied")
+		// A guess we were told not to trust is not shown as a recognition.
+		if object := strings.TrimSpace(outcome.Object); object != "" && !strings.EqualFold(object, "unknown") {
+			detail = object
+		}
+		if outcome.Scaled {
+			detail += " · " + tr("checkAIScaled")
+		}
+		return modelCheck{label: tr("checkAI"), detail: detail, level: 0}, true
+	}
+	return modelCheck{label: tr("checkAI"), detail: trf("checkAIVetoed", outcome.Detail), level: 1}, true
+}
+
+func checkLevelColor(level int) uintptr {
+	switch level {
+	case 2:
+		return th.warnColor
+	case 1:
+		return th.accent
+	default:
+		return th.okColor
+	}
+}
+
+func drawPlanCard(hdc uintptr, r rect) {
+	if height(r) < 60 {
+		return
+	}
+	if checks := modelChecks(); len(checks) > 0 {
+		eyebrow(hdc, tr("checksTitle"), rect{r.Left, r.Top, r.Right, r.Top + 18}, DT_LEFT|DT_VCENTER)
+		y := r.Top + 24
+		rowH := int32(24)
+		for _, check := range checks {
+			if y+rowH > r.Bottom {
+				break
+			}
+			color := checkLevelColor(check.level)
+			circle(hdc, r.Left+4, y+rowH/2, 4, color, color)
+			text(hdc, check.label, rect{r.Left + 16, y, r.Left + width(r)*52/100, y + rowH}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+			detailColor := th.textPrimary
+			if check.level == 2 {
+				detailColor = th.warnColor
+			}
+			text(hdc, check.detail, rect{r.Left + width(r)*52/100, y, r.Right, y + rowH}, hFontSmall, detailColor, DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+			y += rowH
+		}
+		r = rect{r.Left, y + 12, r.Right, r.Bottom}
+		if height(r) < 60 {
+			return
+		}
+	}
+	eyebrow(hdc, tr("planTitle"), rect{r.Left, r.Top, r.Right, r.Top + 18}, DT_LEFT|DT_VCENTER)
+	if app.recommendation == nil {
+		text(hdc, tr("planEmpty"), rect{r.Left, r.Top + 22, r.Right, r.Bottom - 4}, hFontSmall, th.textMuted, DT_LEFT|DT_TOP|DT_WORDBREAK)
+		return
+	}
+	c := app.recommendation.CriticalValues
+	rows := [][2]string{
+		{tr("planLayer"), fmt.Sprintf("%.2f mm", c["layer_height"])},
+		{tr("planWallSpeed"), fmt.Sprintf("%.0f mm/s", c["outer_wall_speed"])},
+		{tr("planFlow"), fmt.Sprintf("%.1f mm³/s", c["max_volumetric_speed"])},
+		{tr("planTemps"), fmt.Sprintf("%.0f°C / %.0f°C", c["nozzle_temperature"], c["bed_temperature"])},
+		{tr("planSupports"), planSupportLabel()},
+	}
+	y := r.Top + 24
+	rowH := int32(23)
+	for _, row := range rows {
+		if y+rowH > r.Bottom {
+			break
+		}
+		text(hdc, row[0], rect{r.Left, y, r.Left + width(r)/2, y + rowH}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(hdc, row[1], rect{r.Left + width(r)/2, y, r.Right, y + rowH}, hFontSmall, th.textPrimary, DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		y += rowH
+	}
+}
+
+func planSupportLabel() string {
+	if app.analysis != nil && app.analysis.SupportSuggested {
+		return tr("supportsOn")
+	}
+	return tr("supportsOff")
+}
+
+// One inspector row: label above, value below, chevron right, hairline under.
+// The hover state is a full-bleed wash rather than a lifting card, which is how
+// list rows behave in a native inspector.
+// An inspector option card: icon tile, label, value, accent detail, chevron.
+func drawSelectSlot(hdc uintptr, r rect, label, value, meta string, icon func(uintptr, int32, int32, uintptr), configured bool, id int) {
+	r = lift(r, id)
+	if hoverOf(id) > 0 {
+		shade(hdc, r, 15, 10, 4, hoverShadow(id, 20))
+	}
+	hoverSunken(hdc, r, 15, id)
+
+	tile := rect{r.Left + 12, (r.Top+r.Bottom)/2 - 19, r.Left + 50, (r.Top+r.Bottom)/2 + 19}
+	iconColor := th.accent
+	if !configured {
+		iconColor = th.textMuted
+	}
+	drawSpatialRoundedMaterial(hdc, tile, 11, th.surface, th.surfaceAlt, th.stroke)
+	icon(hdc, (tile.Left+tile.Right)/2, (tile.Top+tile.Bottom)/2, iconColor)
+
+	textLeft := tile.Right + 14
+	textRight := r.Right - 26
+	hasMeta := meta != "" && height(r) >= 70
+	top := r.Top + 12
+	if !hasMeta {
+		top = r.Top + 18
+	}
+	text(hdc, label, rect{textLeft, top, textRight, top + 22}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	valueColor := th.textMuted
+	if configured {
+		valueColor = th.textSecondary
+	}
+	text(hdc, value, rect{textLeft, top + 20, textRight, top + 40}, hFontSmall, valueColor, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	if hasMeta {
+		text(hdc, meta, rect{textLeft, top + 38, textRight, r.Bottom - 8}, hFontSmall, th.accentText, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	}
+	drawChevron(hdc, r.Right-16+int32(hoverOf(id)*3), (r.Top+r.Bottom)/2, mixColor(th.textMuted, th.accent, hoverOf(id)))
+}
+
+func drawPrinterSlot(hdc uintptr, r rect) {
+	printer, ok := selectedPrinter()
+	value := tr("device")
+	meta := tr("printerNotDetected")
+	if ok {
+		value = printer.Model
+		meta = printer.Brand + " · " + tr("printerNozzle") + " " + selectedNozzleLabel()
+	}
+	drawSelectSlot(hdc, r, tr("navPrinter"), value, meta, drawPrinterIcon, ok, hoverPrinter)
+}
+
+func drawFilamentSlot(hdc uintptr, r rect) {
+	f, ok := selectedFilament()
+	value := tr("noFilament")
+	meta := ""
+	if ok {
+		value = strings.TrimSpace(f.Brand + " " + f.Product)
+		if value == "" {
+			value = f.Material
+		}
+		meta = fmt.Sprintf("%s · %.0f°C / %.0f°C", f.Material, f.NozzleDefault, f.BedDefault)
+	}
+	drawSelectSlot(hdc, r, tr("navMaterial"), value, meta, drawSpoolIcon, ok, hoverFilament)
+}
+
+// A true segmented control: one recessed track, one moving pill.
+func drawQualitySlot(hdc uintptr, r rect) {
+	label := tr("stepQuality")
+	if app.quality == "perfect" {
+		label += " · " + currentTextureTitle()
+	}
+	eyebrow(hdc, label, rect{r.Left, r.Top, r.Right, r.Top + 18}, DT_LEFT|DT_VCENTER)
+
+	track := rect{spatial.fast.Left, spatial.fast.Top, spatial.perfect.Right, spatial.perfect.Bottom}
+	drawSpatialRoundedMaterial(hdc, track, 9, th.sunkenAlt, th.sunken, th.strokeSoft)
+	drawSegment(hdc, spatial.fast, tr("qualityFast"), app.quality == "low", hoverFast)
+	drawSegment(hdc, spatial.balanced, tr("qualityBalanced"), app.quality == "balanced", hoverBalanced)
+	drawSegment(hdc, spatial.perfect, tr("qualityPerfect"), app.quality == "perfect", hoverPerfect)
+}
+
+func drawSegment(hdc uintptr, r rect, label string, selected bool, id int) {
+	if selected {
+		pill := inset(r, 3)
+		shade(hdc, pill, 7, 6, 2, 30)
+		accentFill(hdc, pill, 7)
+		text(hdc, label, pill, hFontSmall, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		return
+	}
+	text(hdc, label, r, hFontSmall, mixColor(th.textSecondary, th.textPrimary, hoverOf(id)), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+}
+
+func drawPrimaryAction(hdc uintptr, r rect) {
+	if app.ready && !app.importing {
+		r = lift(r, hoverOpen)
+		shade(hdc, r, 18, 12, 6, hoverShadow(hoverOpen, 46))
+		accentFill(hdc, r, 18)
+		drawButtonShimmer(hdc, r)
+		text(hdc, tr("openFlash"), inset(r, 8), hFontButton, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		return
+	}
+	drawSpatialRoundedMaterial(hdc, r, 18, th.sunken, th.sunkenAlt, th.stroke)
+	label := tr("openFlash")
+	if app.importing {
+		label = tr("working")
+	}
+	text(hdc, label, inset(r, 8), hFontButton, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func currentTextureTitle() string {
@@ -618,25 +1232,14 @@ func drawButtonShimmer(hdc uintptr, button rect) {
 	region, _, _ := pCreateRoundRectRgn.Call(i32arg(button.Left), i32arg(button.Top), i32arg(button.Right+1), i32arg(button.Bottom+1), 38, 38)
 	if region != 0 {
 		pSelectClipRgn.Call(hdc, region)
-		phase := float64(spatialAnimationTick%240) / 239.0
+		// One sweep every 2.4 s, timed off the clock rather than frame count.
+		phase := animPhase(2.4)
 		x := button.Left - 70 + int32(phase*float64(width(button)+140))
-		drawSpatialGlow(hdc, x, (button.Top+button.Bottom)/2, 44, 31, rgb(255, 255, 255), 44)
+		drawSpatialGlow(hdc, x, (button.Top+button.Bottom)/2, 44, 31, rgb(255, 255, 255), 40)
 		pDeleteObject.Call(region)
 	}
 	if saved != 0 {
 		pRestoreDC.Call(hdc, saved)
-	}
-}
-
-func drawQualityChoice(hdc uintptr, r rect, value, label string) {
-	selected := app.quality == value
-	if selected {
-		drawSpatialSoftShadow(hdc, r, 14, 7, 3, rgb(74, 69, 205), 35)
-		drawSpatialRoundedMaterial(hdc, r, 14, rgb(84, 130, 255), rgb(94, 76, 238), rgb(124, 143, 255))
-		text(hdc, label, inset(r, 5), hFontSmall, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	} else {
-		drawSpatialRoundedMaterial(hdc, r, 14, rgb(255, 255, 255), rgb(243, 246, 251), rgb(224, 229, 240))
-		text(hdc, label, inset(r, 5), hFontSmall, rgb(47, 57, 79), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	}
 }
 
@@ -656,42 +1259,286 @@ func currentStatusText() string {
 	return tr("ready")
 }
 
-func drawStatus(hdc uintptr, w, h int32) {
-	status := currentStatusText()
-	cx := w / 2
-	pulse := int32(1)
-	if spatialAnimationTick%60 < 30 {
-		pulse = 0
+func drawFooter(hdc uintptr, w, h int32) {
+	r := spatial.status
+	line(hdc, 0, r.Top, w, r.Top, th.strokeSoft, 1)
+	cy := (r.Top + r.Bottom) / 2
+	dotColor := th.accent
+	if app.discovering || app.importing || app.analyzing {
+		// Breathes on a 2 s cycle instead of blinking on a frame counter.
+		glow(hdc, 22, cy, 14, 14, dotColor, uint8(40+animPulse(2.0)*60))
 	}
-	drawSpatialGlow(hdc, cx-136, h-31, 19+pulse, 19+pulse, rgb(85, 115, 246), 39)
-	dot := rect{cx - 144, h - 39, cx - 128, h - 23}
-	drawSpatialRoundedMaterial(hdc, dot, 8, rgb(94, 135, 255), rgb(88, 82, 240), rgb(132, 153, 255))
-	text(hdc, "✓", dot, hFontSmall, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(hdc, status, rect{cx - 117, h - 49, cx + 330, h - 13}, hFontBody, rgb(94, 103, 123), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	circle(hdc, 22, cy, 3, dotColor, dotColor)
+	text(hdc, currentStatusText(), rect{34, r.Top, w - 200, r.Bottom}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, "v"+buildVersion, rect{w - 190, r.Top, w - 16, r.Bottom}, hFontSmall, th.textMuted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func drawSpatialScene(hdc uintptr, client rect) {
 	w, h := width(client), height(client)
 	spatial = calculateSpatialLayout(w, h)
-	background := brush(rgb(247, 249, 253))
-	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
-	pDeleteObject.Call(background)
 
-	// Atmospheric light instead of visible decorative shapes.
-	drawSpatialGlow(hdc, w*25/100, 70, min32(430, w*34/100), 250, rgb(219, 226, 255), 31)
-	drawSpatialGlow(hdc, w*78/100, h-40, min32(520, w*38/100), 300, rgb(205, 222, 255), 27)
-	drawSpatialGlow(hdc, w*62/100, 120, min32(300, w*23/100), 210, rgb(231, 218, 255), 20)
-	drawLogo(hdc, w)
-	drawSpatialSoftShadow(hdc, spatial.advanced, 21, 9, 4, rgb(61, 77, 124), 20)
-	drawSpatialRoundedMaterial(hdc, spatial.advanced, 21, rgb(255, 255, 255), rgb(245, 248, 253), rgb(228, 233, 243))
-	text(hdc, "⋯  "+tr("advanced"), inset(spatial.advanced, 8), hFontSmall, rgb(67, 80, 108), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	drawSpatialSoftShadow(hdc, spatial.language, 21, 9, 4, rgb(61, 77, 124), 20)
-	drawSpatialRoundedMaterial(hdc, spatial.language, 21, rgb(255, 255, 255), rgb(245, 248, 253), rgb(228, 233, 243))
-	text(hdc, strings.ToUpper(uiLanguage)+"  ▾", inset(spatial.language, 8), hFontSmall, rgb(48, 60, 87), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	drawDevicePill(hdc)
-	drawPreview(hdc)
-	drawActions(hdc)
-	drawStatus(hdc, w, h)
+	// On a chrome-only frame the canvas must be left exactly as it is. Skipping
+	// the model render is not enough on its own: the background fill covers the
+	// whole window and would wipe it first. Clipping the canvas out is what
+	// actually protects those pixels, and it protects them from every drawing
+	// call in the frame rather than just the one we remembered about.
+	saved := uintptr(0)
+	if sceneSkipStage && width(spatial.stage) > 0 && height(spatial.stage) > 0 {
+		saved, _, _ = pSaveDC.Call(hdc)
+		pExcludeClipRect.Call(hdc,
+			i32arg(spatial.stage.Left), i32arg(spatial.stage.Top),
+			i32arg(spatial.stage.Right), i32arg(spatial.stage.Bottom))
+	}
+
+	fillCanvas(hdc, client)
+	drawAmbientLight(hdc, w, h)
+	drawSidebar(hdc)
+	drawWorkspace(hdc)
+	drawInspector(hdc)
+	drawHeader(hdc, w)
+	drawStatusBar(hdc)
+
+	if saved != 0 {
+		pRestoreDC.Call(hdc, saved)
+	}
+}
+
+var navIconDrawers = [5]func(uintptr, int32, int32, uintptr){
+	drawCubeIcon, drawPrinterIcon, drawSpoolIcon, drawSlidersIcon, drawLayersIcon,
+}
+
+func navLabels() [5]string {
+	return [5]string{tr("navModel"), tr("navPrinter"), tr("navMaterial"), tr("navSettings"), tr("navPreview")}
+}
+
+// Which rail entry is lit: the first thing still missing, so the rail doubles as
+// a progress indicator without numbering the steps.
+func activeNavIndex() int {
+	switch {
+	case app.modelPath == "":
+		return 0
+	case app.printer.ID == "":
+		return 1
+	default:
+		if _, ok := selectedFilament(); !ok {
+			return 2
+		}
+	}
+	return 4
+}
+
+func drawSidebar(hdc uintptr) {
+	panel := spatial.sidebar
+	shade(hdc, panel, 20, 20, 10, 30)
+	card(hdc, panel, 20)
+
+	labels := navLabels()
+	active := activeNavIndex()
+	for i := 0; i < 5; i++ {
+		drawNavItem(hdc, spatial.nav[i], labels[i], navIconDrawers[i], i == active, hoverNav1+i)
+	}
+	if width(spatial.promo) > 0 {
+		drawPromoCard(hdc, spatial.promo)
+	}
+}
+
+func drawNavItem(hdc uintptr, r rect, label string, icon func(uintptr, int32, int32, uintptr), active bool, id int) {
+	iconColor := th.textMuted
+	labelColor := th.textSecondary
+	switch {
+	case active:
+		shade(hdc, r, 13, 9, 4, hoverShadow(id, 24))
+		accentTint(hdc, r, 13)
+		iconColor = th.accent
+		labelColor = th.textPrimary
+	case hoverOf(id) > 0:
+		hoverSunken(hdc, r, 13, id)
+		labelColor = th.textPrimary
+	}
+	icon(hdc, r.Left+26, (r.Top+r.Bottom)/2, iconColor)
+	text(hdc, label, rect{r.Left + 48, r.Top, r.Right - 10, r.Bottom}, hFontBody, labelColor, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+}
+
+func drawPromoCard(hdc uintptr, r rect) {
+	sunkenChip(hdc, r, 15)
+	drawStarIcon(hdc, r.Left+24, r.Top+24, th.accent)
+	text(hdc, tr("promoTitle"), rect{r.Left + 42, r.Top + 12, r.Right - 12, r.Top + 36}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("promoBody"), rect{r.Left + 14, r.Top + 40, r.Right - 14, r.Bottom - 12}, hFontSmall, th.textMuted, DT_LEFT|DT_TOP|DT_WORDBREAK)
+}
+
+func drawCubeIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	line(hdc, cx-9, cy-5, cx, cy-10, color, 2)
+	line(hdc, cx, cy-10, cx+9, cy-5, color, 2)
+	line(hdc, cx+9, cy-5, cx+9, cy+5, color, 2)
+	line(hdc, cx+9, cy+5, cx, cy+10, color, 2)
+	line(hdc, cx, cy+10, cx-9, cy+5, color, 2)
+	line(hdc, cx-9, cy+5, cx-9, cy-5, color, 2)
+	line(hdc, cx-9, cy-5, cx, cy, color, 1)
+	line(hdc, cx+9, cy-5, cx, cy, color, 1)
+	line(hdc, cx, cy, cx, cy+10, color, 1)
+}
+
+func drawLayersIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	for _, off := range []int32{-6, 0, 6} {
+		line(hdc, cx-9, cy+off, cx, cy+off-4, color, 2)
+		line(hdc, cx, cy+off-4, cx+9, cy+off, color, 2)
+	}
+}
+
+func drawStarIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	circle(hdc, cx, cy, 11, th.accentTintB, color)
+	line(hdc, cx, cy-6, cx, cy+6, color, 2)
+	line(hdc, cx-6, cy, cx+6, cy, color, 2)
+	line(hdc, cx-4, cy-4, cx+4, cy+4, color, 1)
+	line(hdc, cx-4, cy+4, cx+4, cy-4, color, 1)
+}
+
+func drawWorkspace(hdc uintptr) {
+	panel := spatial.workspace
+	shade(hdc, panel, 20, 22, 11, 32)
+	card(hdc, panel, 20)
+	text(hdc, tr("workspaceTitle"), rect{panel.Left + 24, panel.Top + 14, panel.Right - 24, panel.Top + 42}, hFontHeading, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("workspaceSubtitle"), rect{panel.Left + 24, panel.Top + 40, panel.Right - 24, panel.Top + 60}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+
+	// A hover frame changes chrome, never the canvas. The canvas pixels already
+	// in the back buffer are still correct, and re-rendering the neon envelope
+	// to paint a menu highlight was the single largest cost of a hover frame.
+	if !sceneSkipStage {
+		drawStage(hdc)
+	}
+	drawToolStrip(hdc)
+
+	sunkenChip(hdc, spatial.dimension, 15)
+	text(hdc, currentVolumeLabel(), spatial.dimension, hFontSmall, th.textSecondary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	drawDropZone(hdc, spatial.drop)
+}
+
+func currentVolumeLabel() string {
+	if app.analysis != nil {
+		a := *app.analysis
+		return fmt.Sprintf("%.0f × %.0f × %.0f mm", a.Extents[0], a.Extents[1], a.Extents[2])
+	}
+	volume := [3]float64{220, 220, 220}
+	if printer, ok := selectedPrinter(); ok && printer.BuildVolume[0] > 0 {
+		volume = printer.BuildVolume
+	}
+	return fmt.Sprintf("%.0f × %.0f × %.0f mm", volume[0], volume[1], volume[2])
+}
+
+func drawToolStrip(hdc uintptr) {
+	strip := rect{spatial.tools[0].Left - 6, spatial.tools[0].Top - 6, spatial.tools[3].Right + 6, spatial.tools[3].Bottom + 6}
+	shade(hdc, strip, 15, 10, 5, 24)
+	sunkenChip(hdc, strip, 15)
+	for i, r := range spatial.tools {
+		id := hoverTool1 + i
+		if hoverOf(id) > 0 {
+			accentTint(hdc, r, 9)
+		}
+		color := mixColor(th.textMuted, th.accent, hoverOf(id))
+		cx, cy := (r.Left+r.Right)/2, (r.Top+r.Bottom)/2
+		switch i {
+		case 0:
+			drawMoveIcon(hdc, cx, cy, color)
+		case 1:
+			drawRotateIcon(hdc, cx, cy, color)
+		case 2:
+			drawFitIcon(hdc, cx, cy, color)
+		default:
+			drawCubeIcon(hdc, cx, cy, color)
+		}
+	}
+}
+
+func drawMoveIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	line(hdc, cx-9, cy, cx+9, cy, color, 2)
+	line(hdc, cx, cy-9, cx, cy+9, color, 2)
+	line(hdc, cx-9, cy, cx-5, cy-4, color, 2)
+	line(hdc, cx-9, cy, cx-5, cy+4, color, 2)
+	line(hdc, cx+9, cy, cx+5, cy-4, color, 2)
+	line(hdc, cx+9, cy, cx+5, cy+4, color, 2)
+	line(hdc, cx, cy-9, cx-4, cy-5, color, 2)
+	line(hdc, cx, cy-9, cx+4, cy-5, color, 2)
+	line(hdc, cx, cy+9, cx-4, cy+5, color, 2)
+	line(hdc, cx, cy+9, cx+4, cy+5, color, 2)
+}
+
+func drawRotateIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	circle(hdc, cx, cy, 8, th.surface, color)
+	line(hdc, cx+6, cy-6, cx+9, cy-2, color, 2)
+	line(hdc, cx+9, cy-2, cx+4, cy-1, color, 2)
+}
+
+func drawFitIcon(hdc uintptr, cx, cy int32, color uintptr) {
+	for _, c := range [4][2]int32{{-8, -8}, {8, -8}, {-8, 8}, {8, 8}} {
+		line(hdc, cx+c[0], cy+c[1], cx+c[0]/2, cy+c[1], color, 2)
+		line(hdc, cx+c[0], cy+c[1], cx+c[0], cy+c[1]/2, color, 2)
+	}
+}
+
+func drawDropZone(hdc uintptr, r rect) {
+	if app.modelPath != "" {
+		sunkenChip(hdc, r, 16)
+		text(hdc, filepath.Base(app.modelPath), rect{r.Left + 20, r.Top + 12, r.Right - 20, r.Top + 42}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(hdc, tr("dropSubtitle"), rect{r.Left + 20, r.Top + 40, r.Right - 20, r.Bottom - 10}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		return
+	}
+	drawDashedFrame(hdc, r)
+	box := rect{r.Left + 20, r.Top + 16, r.Left + 66, r.Bottom - 16}
+	accentTint(hdc, box, 12)
+	drawUploadIcon(hdc, (box.Left+box.Right)/2, (box.Top+box.Bottom)/2, th.accent)
+	text(hdc, tr("dropTitle"), rect{box.Right + 16, r.Top + 14, r.Right - 16, r.Top + 44}, hFontHeading, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, ".stl, .obj, .3mf", rect{box.Right + 16, r.Top + 42, r.Right - 16, r.Bottom - 12}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+}
+
+func drawStatusBar(hdc uintptr) {
+	r := spatial.status
+	shade(hdc, r, 18, 16, 8, 28)
+	card(hdc, r, 18)
+
+	blocked := app.analysis != nil && shared.ValidateAnalysis(*app.analysis) != nil
+	badge := rect{r.Left + 16, (r.Top+r.Bottom)/2 - 17, r.Left + 50, (r.Top+r.Bottom)/2 + 17}
+	badgeColor := th.okColor
+	if blocked {
+		badgeColor = th.warnColor
+	}
+	glow(hdc, (badge.Left+badge.Right)/2, (badge.Top+badge.Bottom)/2, 30, 30, badgeColor, 60)
+	circle(hdc, (badge.Left+badge.Right)/2, (badge.Top+badge.Bottom)/2, 17, badgeColor, badgeColor)
+	text(hdc, "✓", badge, hFontBody, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+
+	headline := tr("statusHealthy")
+	if blocked {
+		headline = tr("statusBlocked")
+	}
+	text(hdc, headline, rect{badge.Right + 14, r.Top + 12, spatial.stats.Left - 20, r.Top + 38}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, currentStatusText(), rect{badge.Right + 14, r.Top + 34, spatial.stats.Left - 20, r.Bottom - 12}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+
+	drawStatChips(hdc, spatial.stats)
+}
+
+func drawStatChips(hdc uintptr, r rect) {
+	filament, duration, weight := "—", "—", "—"
+	if app.recommendation != nil {
+		minutes := app.recommendation.EstimatedModeMinutes
+		duration = fmt.Sprintf("%dh %02dm", int(minutes)/60, int(minutes)%60)
+	}
+	if app.analysis != nil {
+		cubicMM := app.analysis.Volume
+		filament = fmt.Sprintf("%.2f m", cubicMM/(math.Pi*0.875*0.875)/1000)
+		// Use the density of the filament actually selected. A fixed 1.24 is
+		// PLA's; PETG is denser, and printing PETG the estimate came out low by
+		// roughly that difference.
+		density := 1.24
+		if f, ok := selectedFilament(); ok && f.Density > 0 {
+			density = f.Density
+		}
+		weight = fmt.Sprintf("%.0f g", cubicMM/1000*density)
+	}
+	chipW := width(r) / 3
+	for i, pair := range [3][2]string{{tr("statFilament"), filament}, {tr("statTime"), duration}, {tr("statWeight"), weight}} {
+		box := rect{r.Left + int32(i)*chipW, r.Top + 14, r.Left + int32(i+1)*chipW - 10, r.Bottom - 14}
+		eyebrow(hdc, pair[0], rect{box.Left, box.Top, box.Right, box.Top + 16}, DT_LEFT|DT_VCENTER)
+		text(hdc, pair[1], rect{box.Left, box.Top + 14, box.Right, box.Bottom}, hFontBody, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	}
 }
 
 func paintSpatialUI(hwnd uintptr) {
@@ -721,27 +1568,74 @@ func paintSpatialUI(hwnd uintptr) {
 		drawSpatialScene(hdc, client)
 		return
 	}
+	// Every partial repaint below reuses what the buffer already holds, so a
+	// buffer that has never been fully painted must get a full frame first.
+	if mainSpatialBuffer.fresh {
+		stageOnlyFrame, sceneSkipStage = false, false
+	}
+	// An animation frame only redraws the stage into the existing buffer and
+	// blits that rectangle back. The chrome around it is already correct, and
+	// redrawing it sixty times a second was costing most of a CPU core.
+	if stageOnlyFrame && spatialLayoutValid && width(spatial.stage) > 0 {
+		stageOnlyFrame = false
+		area := spatial.stage
+		redrawStageRegion(mainSpatialBuffer.dc)
+		pBitBlt.Call(hdc, i32arg(area.Left), i32arg(area.Top), uintptr(uint32(width(area))), uintptr(uint32(height(area))),
+			mainSpatialBuffer.dc, i32arg(area.Left), i32arg(area.Top), SRCCOPY)
+		return
+	}
+	stageOnlyFrame = false
 	drawSpatialScene(mainSpatialBuffer.dc, client)
+	sceneSkipStage = false
+	spatialLayoutValid = true
+	// The buffer now holds a complete frame, so partial repaints are safe again.
+	mainSpatialBuffer.fresh = false
 	pBitBlt.Call(hdc, 0, 0, uintptr(w), uintptr(h), mainSpatialBuffer.dc, 0, 0, SRCCOPY)
 }
 
+// redrawStageRegion repaints only the canvas, clipped to its own bounds so a
+// stray glow cannot bleed over the chrome it is not allowed to touch.
+func redrawStageRegion(hdc uintptr) {
+	saved, _, _ := pSaveDC.Call(hdc)
+	area := spatial.stage
+	region, _, _ := pCreateRoundRectRgn.Call(i32arg(area.Left), i32arg(area.Top), i32arg(area.Right+1), i32arg(area.Bottom+1), 1, 1)
+	if region != 0 {
+		pSelectClipRgn.Call(hdc, region)
+	}
+	drawStage(hdc)
+	if region != 0 {
+		pDeleteObject.Call(region)
+	}
+	if saved != 0 {
+		pRestoreDC.Call(hdc, saved)
+	}
+}
+
 func drawSpatialResizePlaceholder(hdc uintptr, client rect) {
-	background := brush(rgb(247, 249, 253))
-	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
-	pDeleteObject.Call(background)
-	text(hdc, "FlashFit AI", client, hFontLogo, rgb(36, 42, 57), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	fillCanvas(hdc, client)
+	text(hdc, "FlashFit AI", client, hFontLogo, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 }
 
 func spatialClick(x, y int32) {
 	switch {
+	case contains(spatial.theme, x, y):
+		toggleUITheme()
 	case contains(spatial.language, x, y):
 		showLanguageMenu()
+	case contains(spatial.aiLight, x, y):
+		selectAdvisorModel("")
+	case contains(spatial.aiHeavy, x, y):
+		if heavy, ok := heaviestAvailableModel(); ok {
+			selectAdvisorModel(heavy.Path)
+		} else {
+			showAdvisorModelMenu()
+		}
+	case contains(spatial.aiStatus, x, y):
+		showAdvisorModelMenu()
 	case contains(spatial.advanced, x, y):
 		showAdvancedMenu()
-	case contains(spatial.device, x, y):
+	case contains(spatial.printer, x, y):
 		showPrinterMenu()
-	case contains(spatial.preview, x, y), contains(spatial.model, x, y):
-		chooseAndSetModel()
 	case contains(spatial.filament, x, y):
 		showFilamentPicker()
 	case contains(spatial.fast, x, y):
@@ -754,6 +1648,27 @@ func spatialClick(x, y int32) {
 		if app.ready {
 			startImport()
 		}
+	case contains(spatial.model, x, y), contains(spatial.drop, x, y):
+		chooseAndSetModel()
+	case contains(spatial.nav[0], x, y):
+		chooseAndSetModel()
+	case contains(spatial.nav[1], x, y):
+		showPrinterPicker()
+	case contains(spatial.nav[2], x, y):
+		showFilamentPicker()
+	case contains(spatial.nav[3], x, y):
+		showAdvancedMenu()
+	case contains(spatial.nav[4], x, y):
+		if app.quality == "perfect" {
+			showTexturePicker()
+		} else {
+			setQuality("perfect")
+		}
+	case contains(spatial.tools[2], x, y):
+		resetStageCamera()
+		invalidateSpatial()
+	case contains(spatial.stage, x, y):
+		chooseAndSetModel()
 	}
 }
 
@@ -792,10 +1707,55 @@ func showLanguageMenu() {
 		return
 	}
 	uiLanguage = code
-	saveUILanguage()
+	saveUISettings()
 	setSpatialTitle()
 	updateFilamentDialogLanguage()
 	invalidateSpatial()
+}
+
+// The model chooser. A heavier model recognises unusual parts better but needs
+// the memory to match; the light one always runs. Print quality does not follow
+// from this choice — the settings are computed from the recognised class, not
+// by the model — so a smaller model prints just as correctly, it simply
+// identifies fewer things.
+func showAdvisorModelMenu() {
+	choices := advisorAvailableModels()
+	if len(choices) == 0 {
+		messageBox(mainHwnd, trf("aiNoModels", advisorModelsDir()), appTitle, MB_OK|MB_ICONINFORMATION)
+		return
+	}
+	items := make([]struct {
+		id    int
+		label string
+	}, 0, len(choices)+1)
+	for i, choice := range choices {
+		label := choice.Label
+		if choice.SizeMB > 0 {
+			label = fmt.Sprintf("%s  (%d MB)", label, choice.SizeMB)
+		}
+		selected := (choice.Embedded && advisorSelectedModel == "") ||
+			(!choice.Embedded && strings.EqualFold(choice.Path, advisorSelectedModel))
+		if selected {
+			label = "• " + label
+		}
+		items = append(items, struct {
+			id    int
+			label string
+		}{idAdvisorModelBase + i, label})
+	}
+	items = append(items, struct {
+		id    int
+		label string
+	}{idAdvisorFolder, tr("aiOpenFolder")})
+
+	cmd := popupCommand(items)
+	switch {
+	case cmd == idAdvisorFolder:
+		_ = os.MkdirAll(advisorModelsDir(), 0o700)
+		_ = exec.Command("explorer.exe", advisorModelsDir()).Start()
+	case cmd >= idAdvisorModelBase && cmd < idAdvisorModelBase+len(choices):
+		selectAdvisorModel(choices[cmd-idAdvisorModelBase].Path)
+	}
 }
 
 func showAdvancedMenu() {
@@ -839,7 +1799,7 @@ func showFilamentPicker() {
 	h, _, _ := pCreateWindowEx.Call(0x00000001, uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(title)), WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_CLIPCHILDREN, 190, 105, 920, 670, mainHwnd, 0, inst, 0)
 	if h != 0 {
 		hFilamentDialog = h
-		setPremiumWindowMaterial(h)
+		applyWindowChrome(h)
 		pShowWindow.Call(h, SW_SHOWNORMAL)
 		pSetForegroundWindow.Call(h)
 	}
@@ -883,6 +1843,8 @@ func filamentWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (r
 		return 0
 	case WM_ERASEBKGND:
 		return 1
+	case WM_CTLCOLOREDIT:
+		return themedEditBackground(wParam)
 	case WM_TIMER:
 		foreground, _, _ := pGetForegroundWindow.Call()
 		if wParam == idFilamentAnimation && foreground == hwnd {

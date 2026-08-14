@@ -1,10 +1,9 @@
-//go:build windows
+﻿//go:build windows
 
 package main
 
 import (
 	"fmt"
-	"math"
 	"runtime/debug"
 	"syscall"
 	"unsafe"
@@ -15,11 +14,14 @@ const (
 	idTextureAnimation = 5102
 	WS_CAPTION         = 0x00C00000
 	WS_SYSMENU         = 0x00080000
+	VK_LEFT            = 0x25
+	VK_RIGHT           = 0x27
 )
 
 type texturePickerLayout struct {
 	cards [4]rect
 	apply rect
+	close rect
 }
 
 type texturePickerItem struct {
@@ -40,6 +42,7 @@ var (
 	textureDraft           = "satin"
 	textureLayout          texturePickerLayout
 	textureAnimationTick   uint32
+	textureHoverCard       = -1
 	texturePickerBuffer    windowBackBuffer
 	pGetWindowRect         = user32.NewProc("GetWindowRect")
 )
@@ -105,18 +108,7 @@ func showTexturePicker() {
 }
 
 func setPremiumWindowMaterial(hwnd uintptr) {
-	corner := uint32(2)
-	dark := uint32(0)
-	caption := uint32(rgb(247, 249, 253))
-	captionText := uint32(rgb(24, 29, 40))
-	border := uint32(rgb(189, 199, 224))
-	backdrop := uint32(2)
-	pDwmSetWindowAttr.Call(hwnd, 33, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
-	pDwmSetWindowAttr.Call(hwnd, 20, uintptr(unsafe.Pointer(&dark)), unsafe.Sizeof(dark))
-	pDwmSetWindowAttr.Call(hwnd, 35, uintptr(unsafe.Pointer(&caption)), unsafe.Sizeof(caption))
-	pDwmSetWindowAttr.Call(hwnd, 36, uintptr(unsafe.Pointer(&captionText)), unsafe.Sizeof(captionText))
-	pDwmSetWindowAttr.Call(hwnd, 34, uintptr(unsafe.Pointer(&border)), unsafe.Sizeof(border))
-	pDwmSetWindowAttr.Call(hwnd, 38, uintptr(unsafe.Pointer(&backdrop)), unsafe.Sizeof(backdrop))
+	applyWindowChrome(hwnd)
 }
 
 func closeTexturePicker(apply bool) {
@@ -165,6 +157,29 @@ func textureWindowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (re
 		}
 		if contains(textureLayout.apply, x, y) {
 			closeTexturePicker(true)
+			return 0
+		}
+		if contains(textureLayout.close, x, y) {
+			closeTexturePicker(false)
+		}
+		return 0
+	case WM_MOUSEMOVE:
+		x, y := pointFromLParam(lParam)
+		if card := textureHoveredCard(x, y); card != textureHoverCard {
+			textureHoverCard = card
+			pInvalidateRect.Call(hwnd, 0, 0)
+		}
+		return 0
+	case WM_KEYDOWN:
+		switch wParam {
+		case VK_ESCAPE:
+			closeTexturePicker(false)
+		case VK_RETURN:
+			closeTexturePicker(true)
+		case VK_LEFT, VK_UP:
+			moveTextureDraft(-1)
+		case VK_RIGHT, VK_DOWN:
+			moveTextureDraft(1)
 		}
 		return 0
 	case WM_CLOSE:
@@ -195,7 +210,35 @@ func calculateTextureLayout(w, h int32) texturePickerLayout {
 		layout.cards[i] = rect{left, top, left + cardW, bottom}
 	}
 	layout.apply = rect{w - margin - 224, h - 72, w - margin, h - 26}
+	layout.close = rect{layout.apply.Left - 12 - 122, h - 72, layout.apply.Left - 12, h - 26}
 	return layout
+}
+
+func textureHoveredCard(x, y int32) int {
+	for index, card := range textureLayout.cards {
+		if contains(card, x, y) {
+			return index
+		}
+	}
+	return -1
+}
+
+func textureDraftIndex() int {
+	for index, item := range texturePickerItems {
+		if item.id == textureDraft {
+			return index
+		}
+	}
+	return 0
+}
+
+func moveTextureDraft(delta int) {
+	next := textureDraftIndex() + delta
+	if next < 0 || next >= len(texturePickerItems) {
+		return
+	}
+	textureDraft = texturePickerItems[next].id
+	pInvalidateRect.Call(hTexturePicker, 0, 0)
 }
 
 func paintTexturePicker(hwnd uintptr) {
@@ -222,110 +265,76 @@ func paintTexturePicker(hwnd uintptr) {
 func drawTexturePickerScene(hdc uintptr, client rect) {
 	w, h := width(client), height(client)
 	textureLayout = calculateTextureLayout(w, h)
-	background := brush(rgb(247, 249, 253))
-	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
-	pDeleteObject.Call(background)
-	drawSpatialGlow(hdc, w*18/100, 25, 260, 180, rgb(214, 224, 255), 33)
-	drawSpatialGlow(hdc, w*84/100, h-40, 310, 210, rgb(224, 211, 255), 28)
-	drawSpatialGlow(hdc, w*57/100, 90, 230, 140, rgb(192, 219, 255), 20)
+	fillCanvas(hdc, client)
+	drawAmbientLight(hdc, w, h)
 
-	text(hdc, tr("textureEyebrow"), rect{32, 19, w - 32, 42}, hFontSmall, rgb(89, 103, 191), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(hdc, tr("textureTitle"), rect{32, 41, w - 32, 76}, hFontTitle, rgb(23, 28, 40), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, tr("textureSubtitle"), rect{80, 75, w - 80, 107}, hFontSmall, rgb(91, 102, 128), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("textureEyebrow"), rect{32, 19, w - 32, 42}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	text(hdc, tr("textureTitle"), rect{32, 41, w - 32, 76}, hFontTitle, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("textureSubtitle"), rect{80, 75, w - 80, 107}, hFontSmall, th.textSecondary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 
 	for index, item := range texturePickerItems {
-		drawTextureCard(hdc, textureLayout.cards[index], item, item.id == textureDraft)
+		drawTextureCard(hdc, textureLayout.cards[index], item, item.id == textureDraft, index == textureHoverCard)
 	}
 
-	text(hdc, "✓  "+tr("textureApplied"), rect{34, h - 73, textureLayout.apply.Left - 20, h - 25}, hFontSmall, rgb(75, 89, 126), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	drawSpatialSoftShadow(hdc, textureLayout.apply, 23, 12, 6, rgb(71, 66, 204), 43)
-	drawSpatialRoundedMaterial(hdc, textureLayout.apply, 23, rgb(77, 147, 255), rgb(111, 67, 241), rgb(135, 151, 255))
+	text(hdc, "✓  "+tr("textureApplied"), rect{34, h - 73, textureLayout.close.Left - 20, h - 25}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	cardOutlined(hdc, textureLayout.close, 23, th.stroke)
+	text(hdc, tr("close"), inset(textureLayout.close, 8), hFontButton, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	shade(hdc, textureLayout.apply, 23, 12, 6, 43)
+	accentFill(hdc, textureLayout.apply, 23)
 	drawTextureButtonShimmer(hdc, textureLayout.apply)
-	text(hdc, tr("textureApply")+"   ›", inset(textureLayout.apply, 8), hFontButton, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("textureApply")+"   ›", inset(textureLayout.apply, 8), hFontButton, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
-func drawTextureCard(hdc uintptr, card rect, item texturePickerItem, selected bool) {
-	stroke := rgb(224, 230, 241)
-	if selected {
-		stroke = rgb(105, 121, 244)
-		drawSpatialGlow(hdc, (card.Left+card.Right)/2, card.Top+height(card)/2, width(card)*3/4, height(card)*3/5, rgb(104, 119, 255), 26)
-		drawSpatialSoftShadow(hdc, card, 24, 18, 9, rgb(74, 68, 205), 42)
-	} else {
-		drawSpatialSoftShadow(hdc, card, 24, 13, 7, rgb(64, 78, 123), 24)
+func drawTextureCard(hdc uintptr, card rect, item texturePickerItem, selected, hovered bool) {
+	stroke := th.stroke
+	switch {
+	case selected:
+		stroke = th.accentStroke
+		glow(hdc, (card.Left+card.Right)/2, card.Top+height(card)/2, width(card)*3/4, height(card)*3/5, th.glowCool, 26)
+		shade(hdc, card, 24, 18, 9, 42)
+	case hovered:
+		// The pointer lifts an unselected card so it reads as reachable.
+		card = rect{card.Left, card.Top - 3, card.Right, card.Bottom - 3}
+		stroke = th.accentStroke
+		shade(hdc, card, 24, 16, 8, 34)
+	default:
+		shade(hdc, card, 24, 13, 7, 24)
 	}
-	drawSpatialRoundedMaterial(hdc, card, 24, rgb(255, 255, 255), rgb(244, 247, 252), stroke)
+	cardOutlined(hdc, card, 24, stroke)
 	preview := rect{card.Left + 13, card.Top + 13, card.Right - 13, card.Top + min32(205, height(card)*55/100)}
 	drawTexturePreview(hdc, preview, item.id, selected)
 	if selected {
-		badge := rect{preview.Left + 10, preview.Top + 10, preview.Right - 10, preview.Top + 34}
-		text(hdc, "✓  "+tr("textureSelected"), badge, hFontSmall, rgb(230, 235, 255), DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+		// The swatch underneath can be any brightness, so the badge carries its
+		// own dark pill instead of relying on contrast with the material.
+		badge := rect{preview.Left + 10, preview.Top + 10, preview.Left + 128, preview.Top + 36}
+		drawSpatialRoundedMaterial(hdc, badge, 13, rgb(18, 22, 34), rgb(10, 13, 22), th.accentStroke)
+		text(hdc, "✓  "+tr("textureSelected"), inset(badge, 6), hFontSmall, rgb(232, 237, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	}
-	text(hdc, tr(item.titleKey), rect{card.Left + 14, preview.Bottom + 11, card.Right - 14, preview.Bottom + 41}, hFontHeading, rgb(28, 33, 47), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, tr(item.descriptionKey), rect{card.Left + 17, preview.Bottom + 43, card.Right - 17, card.Bottom - 13}, hFontSmall, rgb(91, 101, 124), DT_CENTER|DT_TOP|DT_WORDBREAK)
+	text(hdc, tr(item.titleKey), rect{card.Left + 14, preview.Bottom + 11, card.Right - 14, preview.Bottom + 41}, hFontHeading, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr(item.descriptionKey), rect{card.Left + 17, preview.Bottom + 43, card.Right - 17, card.Bottom - 13}, hFontSmall, th.textSecondary, DT_CENTER|DT_TOP|DT_WORDBREAK)
 }
 
 func drawTexturePreview(hdc uintptr, preview rect, kind string, selected bool) {
-	drawSpatialRoundedMaterial(hdc, preview, 18, rgb(30, 33, 43), rgb(7, 9, 15), rgb(60, 68, 88))
-	saved, _, _ := pSaveDC.Call(hdc)
-	region, _, _ := pCreateRoundRectRgn.Call(i32arg(preview.Left), i32arg(preview.Top), i32arg(preview.Right+1), i32arg(preview.Bottom+1), 36, 36)
-	if region != 0 {
-		pSelectClipRgn.Call(hdc, region)
+	bitmap := texturePreviewBitmap(kind, width(preview), height(preview))
+	if !drawSpatialCachedBitmap(hdc, bitmap, preview.Left, preview.Top) {
+		drawSpatialRoundedMaterial(hdc, preview, 18, th.sunken, th.sunkenAlt, th.stroke)
 	}
-	accent := rgb(123, 147, 255)
 	if selected {
-		drawSpatialGlow(hdc, preview.Right-25, preview.Top+25, 90, 90, rgb(116, 93, 255), 42)
+		// A rim of accent light around the chosen swatch, inside its own edge.
+		outlineRounded(hdc, inset(preview, 1), 34, th.accent, 2)
 	}
-	switch kind {
-	case "satin":
-		for i := int32(-6); i < 24; i++ {
-			x := preview.Left + i*13
-			shade := rgb(84, 99, 145)
-			if i%4 == 0 {
-				shade = accent
-			}
-			line(hdc, x, preview.Bottom, x+105, preview.Top, shade, 1)
-		}
-		drawSpatialGlow(hdc, (preview.Left+preview.Right)/2, (preview.Top+preview.Bottom)/2, width(preview)/3, height(preview)/3, rgb(174, 190, 255), 24)
-	case "prism":
-		step := max32(26, width(preview)/6)
-		for x := preview.Left - step; x < preview.Right+step; x += step {
-			line(hdc, x, preview.Bottom, x+step*2, preview.Top, rgb(92, 111, 178), 1)
-			line(hdc, x, preview.Top, x+step*2, preview.Bottom, rgb(63, 78, 137), 1)
-		}
-		for y := preview.Top + step/2; y < preview.Bottom; y += step {
-			line(hdc, preview.Left, y, preview.Right, y, rgb(73, 89, 149), 1)
-		}
-		drawSpatialGlow(hdc, preview.Left+width(preview)*62/100, preview.Top+height(preview)*45/100, width(preview)/3, height(preview)/3, rgb(134, 104, 255), 38)
-	case "carbon":
-		for i := int32(-8); i < 24; i++ {
-			x := preview.Left + i*11
-			line(hdc, x, preview.Bottom, x+95, preview.Top, rgb(111, 126, 177), 4)
-			line(hdc, x, preview.Bottom, x+95, preview.Top, rgb(39, 45, 65), 1)
-			line(hdc, x, preview.Top, x+95, preview.Bottom, rgb(65, 75, 110), 3)
-		}
-		drawSpatialGlow(hdc, preview.Left+width(preview)*28/100, preview.Top+height(preview)*30/100, width(preview)/3, height(preview)/3, rgb(94, 127, 255), 24)
-	case "topographic":
-		cx, cy := preview.Left+width(preview)*57/100, preview.Top+height(preview)*53/100
-		nullBrush, _, _ := pGetStockObject.Call(NULL_BRUSH)
-		oldBrush, _, _ := pSelectObject.Call(hdc, nullBrush)
-		for i := int32(1); i <= 9; i++ {
-			p := pen(PS_SOLID, 1, rgb(uint8(66+i*4), uint8(81+i*5), uint8(130+i*7)))
-			oldPen, _, _ := pSelectObject.Call(hdc, p)
-			rx, ry := i*14, i*10
-			offset := int32(math.Sin(float64(i)*1.7) * 8)
-			pEllipse.Call(hdc, i32arg(cx-rx+offset), i32arg(cy-ry), i32arg(cx+rx+offset), i32arg(cy+ry))
-			pSelectObject.Call(hdc, oldPen)
-			pDeleteObject.Call(p)
-		}
-		pSelectObject.Call(hdc, oldBrush)
-		drawSpatialGlow(hdc, cx, cy, width(preview)/3, height(preview)/3, rgb(86, 124, 255), 22)
-	}
-	if region != 0 {
-		pDeleteObject.Call(region)
-	}
-	if saved != 0 {
-		pRestoreDC.Call(hdc, saved)
-	}
+}
+
+// outlineRounded strokes a rounded rectangle without filling it.
+func outlineRounded(hdc uintptr, r rect, diameter int32, color uintptr, lineWidth int) {
+	p := pen(PS_SOLID, lineWidth, color)
+	nullBrush, _, _ := pGetStockObject.Call(NULL_BRUSH)
+	oldPen, _, _ := pSelectObject.Call(hdc, p)
+	oldBrush, _, _ := pSelectObject.Call(hdc, nullBrush)
+	pRoundRect.Call(hdc, i32arg(r.Left), i32arg(r.Top), i32arg(r.Right), i32arg(r.Bottom), uintptr(uint32(diameter)), uintptr(uint32(diameter)))
+	pSelectObject.Call(hdc, oldBrush)
+	pSelectObject.Call(hdc, oldPen)
+	pDeleteObject.Call(p)
 }
 
 func drawTextureButtonShimmer(hdc uintptr, button rect) {

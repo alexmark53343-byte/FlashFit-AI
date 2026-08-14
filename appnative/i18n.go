@@ -9,8 +9,10 @@ import (
 )
 
 const defaultLanguage = "it"
+const defaultTheme = "light"
 
 var uiLanguage = defaultLanguage
+var uiTheme = defaultTheme
 
 var languageNames = map[string]string{
 	"it": "Italiano",
@@ -221,25 +223,38 @@ func calibrationPath() string {
 	return filepath.Join(filepath.Dir(settingsPath()), "filament_calibrations.json")
 }
 
-func loadUILanguage() {
+type uiSettings struct {
+	Language string `json:"language"`
+	Theme    string `json:"theme"`
+	// Which weights the advisor loads. Empty means the light model built into
+	// the app, which is the one that runs anywhere.
+	AdvisorModel string `json:"advisor_model,omitempty"`
+}
+
+func normalizeTheme(name string) string {
+	if strings.EqualFold(strings.TrimSpace(name), "dark") {
+		return "dark"
+	}
+	return defaultTheme
+}
+
+func loadUISettings() {
 	b, err := os.ReadFile(settingsPath())
 	if err != nil {
 		return
 	}
-	var settings struct {
-		Language string `json:"language"`
-	}
+	var settings uiSettings
 	if json.Unmarshal(b, &settings) == nil {
 		uiLanguage = normalizeLanguage(settings.Language)
+		uiTheme = normalizeTheme(settings.Theme)
+		advisorSelectedModel = settings.AdvisorModel
 	}
 }
 
-func saveUILanguage() {
+func saveUISettings() {
 	p := settingsPath()
 	_ = os.MkdirAll(filepath.Dir(p), 0700)
-	b, _ := json.MarshalIndent(struct {
-		Language string `json:"language"`
-	}{uiLanguage}, "", "  ")
+	b, _ := json.MarshalIndent(uiSettings{Language: uiLanguage, Theme: uiTheme, AdvisorModel: advisorSelectedModel}, "", "  ")
 	_ = os.WriteFile(p, b, 0600)
 }
 

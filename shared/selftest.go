@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -232,8 +233,23 @@ func writeSelfTest3MF(path string, markers []string, rec Recommendation) error {
 	if e != nil {
 		return e
 	}
-	config := fmt.Sprintf("%s\nlayer_height=%s\nouter_wall_speed=%s\nouter_wall_acceleration=%s\nfilament_max_volumetric_speed=%s\nnozzle_temperature=%s", strings.Join(markers, "\n"), fmt2(rec.CriticalValues["layer_height"]), fmt0(rec.CriticalValues["outer_wall_speed"]), fmt0(rec.CriticalValues["outer_acceleration"]), fmt2(rec.CriticalValues["max_volumetric_speed"]), fmt0(rec.CriticalValues["nozzle_temperature"]))
-	_, e = c.Write([]byte(config))
+	var config strings.Builder
+	config.WriteString(strings.Join(markers, "\n"))
+	fmt.Fprintf(&config, "\nlayer_height=%s\nouter_wall_speed=%s\nouter_wall_acceleration=%s\nfilament_max_volumetric_speed=%s\nnozzle_temperature=%s",
+		fmt2(rec.CriticalValues["layer_height"]), fmt0(rec.CriticalValues["outer_wall_speed"]), fmt0(rec.CriticalValues["outer_acceleration"]),
+		fmt2(rec.CriticalValues["max_volumetric_speed"]), fmt0(rec.CriticalValues["nozzle_temperature"]))
+	// The named settings — surface pattern, ironing and fuzzy skin — decide the
+	// finish. Validate3MF requires them, so the fixture has to carry them too;
+	// leaving them out made the app's own end-to-end check fail.
+	settingKeys := make([]string, 0, len(rec.CriticalSettings))
+	for key := range rec.CriticalSettings {
+		settingKeys = append(settingKeys, key)
+	}
+	sort.Strings(settingKeys)
+	for _, key := range settingKeys {
+		fmt.Fprintf(&config, "\n%s=%s", key, rec.CriticalSettings[key])
+	}
+	_, e = c.Write([]byte(config.String()))
 	if e != nil {
 		return e
 	}

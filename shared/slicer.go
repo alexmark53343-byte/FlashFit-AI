@@ -60,6 +60,25 @@ type ImportResult struct {
 	Stderr      string   `json:"stderr"`
 }
 
+// uniqueRoots drops directories that repeat under a different spelling. The
+// candidate lists carry both "FlashForge" and "Flashforge" because installers
+// disagree, but Windows paths are case-insensitive: without this every tree was
+// walked twice, indexing each profile under two spellings and burning the walk
+// budget at double rate.
+func uniqueRoots(roots []string) []string {
+	seen := make(map[string]bool, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		key := strings.ToLower(filepath.Clean(root))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, root)
+	}
+	return out
+}
+
 func DiscoverProfiles() DiscoveredProfiles {
 	var d DiscoveredProfiles
 	executables := map[string]string{}
@@ -81,7 +100,7 @@ func DiscoverProfiles() DiscoveredProfiles {
 		}
 	}
 	seenM, seenP, seenF := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, root := range likelyProfileRoots() {
+	for _, root := range uniqueRoots(likelyProfileRoots()) {
 		st, err := os.Stat(root)
 		if err != nil || !st.IsDir() {
 			continue
@@ -218,7 +237,7 @@ func discoverSlicerExecutable() string {
 	}
 	var candidates []string
 	visited := 0
-	for _, root := range roots {
+	for _, root := range uniqueRoots(roots) {
 		st, err := os.Stat(root)
 		if err != nil || !st.IsDir() {
 			continue
@@ -321,6 +340,8 @@ var processPatchKeys = map[string]bool{
 	"bridge_flow": true, "avoid_crossing_wall": true, "reduce_infill_retraction": true, "overhang_1_4_speed": true, "overhang_2_4_speed": true, "overhang_3_4_speed": true, "overhang_4_4_speed": true,
 	"ironing_type": true, "ironing_pattern": true, "ironing_flow": true, "ironing_spacing": true, "ironing_inset": true,
 	"fuzzy_skin": true, "fuzzy_skin_thickness": true, "fuzzy_skin_point_distance": true, "fuzzy_skin_first_layer": true,
+	"support_top_z_distance": true, "support_bottom_z_distance": true, "support_object_xy_distance": true,
+	"support_interface_spacing": true, "support_interface_loop_pattern": true,
 }
 var filamentPatchKeys = map[string]bool{
 	"filament_density": true, "filament_flow_ratio": true, "filament_max_volumetric_speed": true, "nozzle_temperature": true, "nozzle_temperature_initial_layer": true, "hot_plate_temp": true, "hot_plate_temp_initial_layer": true, "textured_plate_temp": true, "textured_plate_temp_initial_layer": true, "fan_min_speed": true, "fan_max_speed": true, "enable_pressure_advance": true, "pressure_advance": true,
@@ -667,16 +688,18 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 	if err := ValidateSlicerExe(req.SlicerExe); err != nil {
 		return ImportResult{}, err
 	}
-	if err := ProbeSlicerCLI(req.SlicerExe); err != nil {
-		return ImportResult{}, err
-	}
+	// A missing CLI is no longer fatal: the project is written directly and
+	// opened instead. See buildProjectWithoutCLI.
+	cliErr := ProbeSlicerCLI(req.SlicerExe)
 	printer, err := ResolvePrinterProfile(req.Machine)
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if err := ValidateModelForPrinter(req.Model, printer); err != nil {
-		return ImportResult{}, err
-	}
+	// A model that does not fit as one lump is not necessarily unprintable: a
+	// download is often several separate parts sharing one file. That case is
+	// handled by splitting onto more plates further down, so the size check
+	// only becomes fatal if the split cannot rescue it either.
+	fitErr := ValidateModelForPrinter(req.Model, printer)
 	if !fileExists(req.Model.StoredModelPath) {
 		return ImportResult{}, errors.New("copia geometrica temporanea non trovata")
 	}
@@ -693,6 +716,22 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 	rec, e := RecommendForPrinterWithTexture(req.Model, req.Filament, printer, req.Quality, req.Texture)
 	if e != nil {
 		return ImportResult{}, e
+	}
+	// The finished profile is walked against the machine and the material
+	// before anything is written. Settings are chosen individually but a print
+	// fails on how they combine, and a defect predicted here costs nothing
+	// while the same defect found on the plate costs the whole print.
+	readiness := CheckPrintReadiness(rec, req.Model, req.Filament, printer)
+	LastPrintReadiness = readiness
+	if readiness.Blocked {
+		detail := ""
+		for _, issue := range readiness.Issues {
+			if issue.Severity >= 2 {
+				detail = issue.Detail
+				break
+			}
+		}
+		return ImportResult{}, fmt.Errorf("profilo non sicuro per questa combinazione: %s", detail)
 	}
 	outDir := req.OutputDir
 	if outDir == "" {
@@ -725,6 +764,72 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 	}
 	name := strings.TrimSuffix(filepath.Base(req.Model.Filename), filepath.Ext(req.Model.Filename))
 	project := uniquePath(filepath.Join(outDir, safeProfileName(name)+"_FlashFit.3mf"))
+
+	// No command line on this installation: write the project ourselves rather
+	// than failing with the profile already computed and nothing to show for it.
+	if cliErr != nil {
+		profileName := recommendationProfileNameForPrinter(rec, printer)
+		// Start from the profiles the slicer itself installed, so every setting
+		// FlashFit does not tune keeps its vendor value.
+		sources := ProjectSources{Machine: req.Machine, BaseProcess: req.BaseProcess, BaseFilament: req.BaseFilament}
+		note := ""
+
+		if fitErr != nil {
+			// Too big as one piece: separate it and lay the parts out over as
+			// many plates as the machine needs.
+			tris, e := loadModelTriangles(req.Model.StoredModelPath)
+			if e != nil {
+				return ImportResult{}, fmt.Errorf("%v (e la geometria non è divisibile: %v)", fitErr, e)
+			}
+			plates, oversized := PackIntoPlates(SplitIntoPieces(tris), printer.BuildVolume)
+			if len(plates) == 0 {
+				return ImportResult{}, fitErr
+			}
+			written, e := writePlateProjects(plates, project, rec, printer, profileName, work, sources)
+			if e != nil {
+				return ImportResult{}, e
+			}
+			project = written[0]
+			note = fmt.Sprintf("Il modello non entra in un solo piatto: FlashFit lo ha diviso in %s, a dimensione piena. ",
+				DescribePlates(plates, oversized))
+			if len(oversized) > 0 {
+				note += fmt.Sprintf("%d pezzi restano troppo grandi anche da soli e vanno scalati o tagliati. ", len(oversized))
+			}
+			note += fmt.Sprintf("Aperto il primo di %d progetti; gli altri sono nella stessa cartella. ", len(written))
+		} else {
+			// STL input is cached byte-for-byte, so it has to become a 3MF
+			// before it can carry settings. OBJ and 3MF already are one.
+			geometry, e := EnsureGeometry3MF(req.Model.StoredModelPath, work)
+			if e != nil {
+				return ImportResult{}, fmt.Errorf("geometria non convertibile in progetto: %w", e)
+			}
+			if e := WriteProjectWithSources(geometry, project, rec, printer, profileName, sources); e != nil {
+				return ImportResult{}, fmt.Errorf("progetto non generabile senza CLI: %w", e)
+			}
+		}
+		if e := verifyZipReadable(project); e != nil {
+			return ImportResult{}, fmt.Errorf("il progetto scritto non è un 3MF valido: %w", e)
+		}
+		_ = note
+		_ = pp
+		_ = ff
+		// The project exists; now actually open it. Building it and stopping
+		// short left the user with a file and no window, which from the outside
+		// looks exactly like nothing having happened.
+		open := exec.Command(req.SlicerExe, project)
+		if e := open.Start(); e != nil {
+			return ImportResult{}, fmt.Errorf("progetto creato in %s ma impossibile aprire lo slicer: %w", project, e)
+		}
+		go func() { _ = open.Wait() }()
+		return ImportResult{
+			ProjectPath: project,
+			SummaryPath: summary,
+			Command:     []string{req.SlicerExe, project},
+			Stdout: note + "Lo slicer installato non espone una riga di comando: FlashFit ha scritto il progetto direttamente. " +
+				"Il modello si apre con il profilo già applicato; premi Taglia nello slicer per tempo e anteprima.",
+		}, nil
+	}
+
 	candidate := filepath.Join(work, "candidate.3mf")
 	if strings.Contains(req.Machine, ";") || strings.Contains(pp, ";") || strings.Contains(ff, ";") {
 		return ImportResult{}, errors.New("i percorsi dei profili non possono contenere ;")

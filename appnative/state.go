@@ -6,16 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"flashfitai/shared"
 )
 
 type profileMeta struct {
-	Type       string
-	Name       string
-	Material   string
-	Compatible string
+	Type        string
+	Name        string
+	Material    string
+	Compatible  string
+	LayerHeight float64
 }
 
 func readProfileMeta(path string) profileMeta {
@@ -44,7 +46,8 @@ func readProfileMeta(path string) profileMeta {
 		}
 	}
 	compatible := strings.Join([]string{scalar(m["compatible_printers"]), scalar(m["compatible_printers_condition"]), scalar(m["printer_model"]), scalar(m["inherits"])}, " ")
-	return profileMeta{Type: strings.ToLower(scalar(m["type"])), Name: scalar(m["name"]), Material: strings.ToUpper(scalar(m["filament_type"])), Compatible: compatible}
+	layer, _ := strconv.ParseFloat(strings.TrimSpace(scalar(m["layer_height"])), 64)
+	return profileMeta{Type: strings.ToLower(scalar(m["type"])), Name: scalar(m["name"]), Material: strings.ToUpper(scalar(m["filament_type"])), Compatible: compatible, LayerHeight: layer}
 }
 
 func mergeFilaments(base, official []shared.Filament) []shared.Filament {
@@ -114,26 +117,53 @@ func processScoreForPrinter(path, quality string, printer shared.PrinterProfile,
 	} else if _, matched := shared.MatchPrinterText(hay); matched {
 		return -1000
 	}
+	// Vendors mark a profile compatible with a whole family, so several models'
+	// profiles are legitimately usable. Prefer the one actually named for this
+	// machine, otherwise an AD5X profile can win on an AD5M.
+	title := strings.ToLower(filepath.Base(path) + " " + m.Name)
+	if shared.PrinterTextMatches(printer, title) {
+		score += 60
+	} else if named, matched := shared.MatchPrinterText(title); matched && named.ID != printer.ID {
+		score -= 60
+	}
 	if !profileNozzleCompatible(hay, printer.NozzleDiameter) {
 		return -1000
 	}
-	switch quality {
-	case "low":
-		for _, x := range []string{"0.28", "0.3", "draft", "fast"} {
-			if strings.Contains(hay, x) {
-				score += 30
+	// Rank by the layer height the profile actually states. Keyword lists could
+	// not tell "0.24mm Draft" from "0.12mm Fine" on a machine whose draft is
+	// 0.24, which is how Fast and Perfect ended up on the same profile.
+	if layer, ok := profileLayerHeight(path, m); ok {
+		switch quality {
+		case "low":
+			score += int(layer * 400) // thicker is faster
+		case "perfect":
+			score += int((0.4 - layer) * 400) // thinner is finer
+		default:
+			delta := layer - 0.20
+			if delta < 0 {
+				delta = -delta
 			}
+			score += 160 - int(delta*800)
 		}
-	case "perfect":
-		for _, x := range []string{"0.12", "0.1", "fine", "detail", "quality"} {
-			if strings.Contains(hay, x) {
-				score += 30
+	} else {
+		switch quality {
+		case "low":
+			for _, x := range []string{"draft", "fast", "speed"} {
+				if strings.Contains(hay, x) {
+					score += 30
+				}
 			}
-		}
-	default:
-		for _, x := range []string{"0.20", "0.2", "standard", "normal"} {
-			if strings.Contains(hay, x) {
-				score += 30
+		case "perfect":
+			for _, x := range []string{"fine", "detail", "quality"} {
+				if strings.Contains(hay, x) {
+					score += 30
+				}
+			}
+		default:
+			for _, x := range []string{"standard", "normal"} {
+				if strings.Contains(hay, x) {
+					score += 30
+				}
 			}
 		}
 	}
@@ -144,6 +174,36 @@ func processScoreForPrinter(path, quality string, printer shared.PrinterProfile,
 		score -= 5
 	}
 	return score
+}
+
+// profileLayerHeight reads the layer height a process profile declares. The
+// stated value in the profile wins; otherwise the leading "0.24mm" in the file
+// name is used, which is the convention every vendor profile tree follows.
+func profileLayerHeight(path string, m profileMeta) (float64, bool) {
+	if m.LayerHeight > 0.01 && m.LayerHeight < 1.5 {
+		return m.LayerHeight, true
+	}
+	name := strings.ToLower(filepath.Base(path))
+	for i := 0; i+3 < len(name); i++ {
+		if name[i] != '0' || name[i+1] != '.' {
+			continue
+		}
+		end := i + 2
+		for end < len(name) && name[end] >= '0' && name[end] <= '9' {
+			end++
+		}
+		if end == i+2 {
+			continue
+		}
+		// Only accept it when it reads as a layer height, not a nozzle size.
+		if !strings.HasPrefix(name[end:], "mm") {
+			continue
+		}
+		if value, err := strconv.ParseFloat(name[i:end], 64); err == nil && value > 0.01 && value < 1.5 {
+			return value, true
+		}
+	}
+	return 0, false
 }
 
 func profileNozzleCompatible(text string, nozzle float64) bool {

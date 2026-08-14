@@ -188,11 +188,28 @@ func ResolvePrinterProfile(path string) (PrinterProfile, error) {
 	return resolvePrinterMap(m)
 }
 
+// ValidateModelForPrinter judges the largest single part, not the box around
+// every part in the file. A download holding a car and its garage measures far
+// wider than the plate while each piece fits comfortably; those go on separate
+// plates rather than being refused.
 func ValidateModelForPrinter(a ModelAnalysis, p PrinterProfile) error {
+	measured := printableExtents(a)
 	for i, axis := range []string{"X", "Y", "Z"} {
-		if a.Extents[i] > p.BuildVolume[i]+0.01 {
-			return fmt.Errorf("modello fuori volume %s: asse %s %.1f mm supera %.1f mm", p.Model, axis, a.Extents[i], p.BuildVolume[i])
+		if measured[i] > p.BuildVolume[i]+0.01 {
+			if a.PieceCount > 1 {
+				return fmt.Errorf("pezzo singolo fuori volume %s: asse %s %.1f mm supera %.1f mm (il file contiene %d pezzi)",
+					p.Model, axis, measured[i], p.BuildVolume[i], a.PieceCount)
+			}
+			return fmt.Errorf("modello fuori volume %s: asse %s %.1f mm supera %.1f mm", p.Model, axis, measured[i], p.BuildVolume[i])
 		}
 	}
 	return nil
+}
+
+// printableExtents is the size that actually has to fit on a plate.
+func printableExtents(a ModelAnalysis) [3]float64 {
+	if a.PieceCount > 1 && a.LargestPiece[0] > 0 {
+		return a.LargestPiece
+	}
+	return a.Extents
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -36,11 +37,17 @@ const (
 	WM_COMMAND        = 0x0111
 	WM_DROPFILES      = 0x0233
 	WM_SETFONT        = 0x0030
+	WM_LBUTTONDOWN    = 0x0201
+	WM_LBUTTONDBLCLK  = 0x0203
+	WM_MOUSEMOVE      = 0x0200
+	CS_DBLCLKS        = 0x0008
 	WM_APP            = 0x8000
 	WM_DISCOVERY_DONE = WM_APP + 1
 	WM_ANALYSIS_DONE  = WM_APP + 2
 	WM_IMPORT_DONE    = WM_APP + 3
 	WM_SHOW_TEXTURES  = WM_APP + 4
+	WM_PREVIEW_DONE   = WM_APP + 5
+	WM_ADVISOR_READY  = WM_APP + 6
 
 	WS_OVERLAPPEDWINDOW = 0x00CF0000
 	WS_VISIBLE          = 0x10000000
@@ -189,6 +196,7 @@ var (
 	pLoadCursor          = user32.NewProc("LoadCursorW")
 	pLoadIcon            = user32.NewProc("LoadIconW")
 	pSetProcessDPI       = user32.NewProc("SetProcessDpiAwarenessContext")
+	pScreenToClient      = user32.NewProc("ScreenToClient")
 
 	pGetModuleHandle   = kernel32.NewProc("GetModuleHandleW")
 	pCreateMutex       = kernel32.NewProc("CreateMutexW")
@@ -246,6 +254,7 @@ type appState struct {
 	printerChoices     []shared.DiscoveredMachine
 	printerIndex       int
 	printer            shared.PrinterProfile
+	recommendation     *shared.Recommendation
 	filamentMatchTotal int
 	ready              bool
 	statusKey          string
@@ -270,11 +279,19 @@ type asyncState struct {
 	mergedFilaments    []shared.Filament
 	processChoices     map[string]string
 	baseChoices        map[string]string
+	previewMesh        []shared.PreviewTriangle
+	previewGeneration  uint64
 }
 
 type analysisWorkerResult struct {
 	Analysis shared.ModelAnalysis `json:"analysis"`
-	Error    string               `json:"error,omitempty"`
+	// The analysis runs in a separate process and comes back as JSON, but both
+	// path fields are json:"-" on the struct so they never leak into a saved
+	// summary. That also dropped them on the way home, leaving the import with
+	// no geometry copy to work from — so they are carried explicitly here.
+	StoredModelPath string `json:"stored_model_path,omitempty"`
+	SourcePath      string `json:"source_path,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 type discoveryWorkerResult struct {
@@ -298,6 +315,8 @@ func runAnalysisWorker(inputPath, outputPath string) int {
 		result.Error = err.Error()
 	} else {
 		result.Analysis = a
+		result.StoredModelPath = a.StoredModelPath
+		result.SourcePath = a.SourcePath
 	}
 	b, marshalErr := json.Marshal(result)
 	if marshalErr != nil {
@@ -378,6 +397,12 @@ func runDiscoveryWorker(outputPath string) int {
 }
 
 func main() {
+	// Win32 window handles and their message queues belong to the thread that
+	// created them. Without this pin the Go scheduler can migrate the message
+	// loop onto another OS thread, where GetMessage waits on an empty queue and
+	// the window stops responding entirely.
+	runtime.LockOSThread()
+
 	if len(os.Args) == 4 && os.Args[1] == "--analyze-worker" {
 		os.Exit(runAnalysisWorker(os.Args[2], os.Args[3]))
 	}
@@ -455,7 +480,7 @@ func runGUI() error {
 		icon, _, _ = pLoadIcon.Call(0, IDI_APPLICATION)
 	}
 	cls := utf16Ptr(className)
-	wc := wndClassEx{CbSize: uint32(unsafe.Sizeof(wndClassEx{})), LpfnWndProc: syscall.NewCallback(windowProc), HInstance: inst, HIcon: icon, HCursor: cursor, HbrBackground: COLOR_BTNFACE + 1, LpszClassName: cls, HIconSm: icon}
+	wc := wndClassEx{CbSize: uint32(unsafe.Sizeof(wndClassEx{})), Style: CS_DBLCLKS, LpfnWndProc: syscall.NewCallback(windowProc), HInstance: inst, HIcon: icon, HCursor: cursor, HbrBackground: COLOR_BTNFACE + 1, LpszClassName: cls, HIconSm: icon}
 	atom, _, err := pRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
 	if atom == 0 {
 		return fmt.Errorf("impossibile registrare la finestra Win32: %v", err)
@@ -511,6 +536,17 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		}
 		loadInitialCatalog()
 		startDiscovery()
+		// The model server comes up alongside discovery. It is slow to load, so
+		// it must never block the window appearing.
+		//
+		// Answers arrive on a background goroutine; posting a message is how
+		// they reach the UI thread, which owns every repaint.
+		shared.AdvisorNotify = func() {
+			if mainHwnd != 0 {
+				pPostMessage.Call(mainHwnd, WM_ADVISOR_READY, 0, 0)
+			}
+		}
+		advisorServer.start()
 		if qaTextureMode {
 			pPostMessage.Call(hwnd, WM_SHOW_TEXTURES, 0, 0)
 		}
@@ -540,14 +576,77 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		return 0
 	case WM_TIMER:
 		if wParam == idSpatialAnimation && spatialAnimationActive(hwnd) {
+			// Everything advances on real elapsed time, so effects keep their
+			// rate even while the window is busy painting something expensive.
+			dt := animClock.tick()
 			spatialAnimationTick++
-			invalidateSpatial()
+			refreshHoverFromCursor(hwnd)
+			advancePlateSpin(dt)
+			// Hover changes touch chrome all over the window, so those need a
+			// full frame. Continuous effects live in the stage and get a
+			// stage-only frame, which is what keeps 60 Hz affordable.
+			// Two cadences on one timer. Hover runs at the full 60 Hz because
+			// pointer feedback is felt directly; the drifting envelope runs at
+			// half that, which is indistinguishable on motion this slow and
+			// halves the cost of the only continuously animating region.
+			// Tracks advance at the full 60 Hz so the easing keeps its shape,
+			// but a frame is only issued every other tick. A hover change still
+			// repaints the whole window — the chrome it affects is spread all
+			// over it — and at 60 Hz that redraw dominated the CPU.
+			hoverMoved := animateHover(dt)
+			if spatialAnimationTick%2 != 0 {
+				return 0
+			}
+			switch {
+			case hoverMoved || !hoverSettled():
+				// Hover never changes the canvas, so the canvas is not redrawn.
+				invalidateChrome()
+			case sceneNeedsAnimationFrame():
+				invalidateStageOnly()
+			}
 		}
 		return 0
 	case WM_ERASEBKGND:
 		return 1
+	case WM_LBUTTONDOWN:
+		x, y := pointFromLParam(lParam)
+		pressedRegion = regionAt(x, y)
+		if contains(spatial.stage, x, y) {
+			stageBeginDrag(x, y)
+		}
+		invalidateSpatial()
+		return 0
+	case WM_MOUSEMOVE:
+		x, y := pointFromLParam(lParam)
+		hoveredRegion = regionAt(x, y)
+		stageDragTo(x, y)
+		return 0
+	case WM_LBUTTONDBLCLK:
+		x, y := pointFromLParam(lParam)
+		if contains(spatial.stage, x, y) {
+			resetStageCamera()
+			invalidateSpatial()
+		}
+		return 0
+	case WM_MOUSEWHEEL:
+		var pt point
+		pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+		pScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
+		if contains(spatial.stage, pt.X, pt.Y) {
+			if int16((wParam>>16)&0xffff) > 0 {
+				stageZoomBy(1)
+			} else {
+				stageZoomBy(-1)
+			}
+		}
+		return 0
 	case WM_LBUTTONUP:
 		x, y := pointFromLParam(lParam)
+		pressedRegion = hoverNone
+		if endStageDrag() {
+			// The gesture was an orbit, not a click on the stage.
+			return 0
+		}
 		spatialClick(x, y)
 		return 0
 	case WM_COMMAND:
@@ -570,6 +669,14 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 	case WM_SHOW_TEXTURES:
 		setQuality("perfect")
 		return 0
+	case WM_ADVISOR_READY:
+		// Whatever the outcome, the inspector now has something new to say.
+		renderAnalysis()
+		invalidateSpatial()
+		return 0
+	case WM_PREVIEW_DONE:
+		finishPreviewMeshLoad()
+		return 0
 	case WM_CLOSE:
 		if app.importCancel != nil {
 			app.importCancel()
@@ -580,6 +687,9 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case WM_DESTROY:
+		// Stop the model server before we go. The job object would kill it
+		// anyway, but shutting it down explicitly keeps the exit clean.
+		advisorServer.stop()
 		cleanupSpatialUI()
 		pPostQuitMessage.Call(0)
 		return 0
@@ -1062,6 +1172,9 @@ func startAnalyze(path string) {
 			return
 		}
 		a = wr.Analysis
+		// Restore what json:"-" stripped on the way across the process boundary.
+		a.StoredModelPath = wr.StoredModelPath
+		a.SourcePath = wr.SourcePath
 	}(path, generation, ctx)
 }
 
@@ -1097,6 +1210,7 @@ func finishAnalysis() {
 		}
 	} else {
 		app.analysis = &a
+		startPreviewMeshLoad(a, generation)
 		if ve := shared.ValidateAnalysis(a); ve != nil {
 			setStatusKey("statusAnalysisBlocked", ve.Error())
 		} else {
@@ -1108,7 +1222,40 @@ func finishAnalysis() {
 	invalidateSpatial()
 }
 
+// The stage shows the geometry the analysis accepted. Parsing runs off the UI
+// thread; a stale generation is discarded so a fast second import always wins.
+func startPreviewMeshLoad(a shared.ModelAnalysis, generation uint64) {
+	source := a.StoredModelPath
+	if source == "" {
+		source = a.SourcePath
+	}
+	if source == "" {
+		return
+	}
+	go func() {
+		tris, err := shared.LoadPreviewMesh(source, stagePreviewTriangleBudget)
+		if err != nil {
+			writeLog("preview mesh unavailable: " + err.Error())
+		}
+		pending.mu.Lock()
+		pending.previewMesh, pending.previewGeneration = tris, generation
+		pending.mu.Unlock()
+		pPostMessage.Call(mainHwnd, WM_PREVIEW_DONE, 0, 0)
+	}()
+}
+
+func finishPreviewMeshLoad() {
+	pending.mu.Lock()
+	tris, generation := pending.previewMesh, pending.previewGeneration
+	pending.mu.Unlock()
+	if generation != app.analysisGeneration || len(tris) == 0 {
+		return
+	}
+	setStagePreviewMesh(tris)
+}
+
 func renderAnalysis() {
+	updateRecommendation()
 	if app.analysis == nil {
 		setText(hAnalysis, "Importa o trascina un file STL, OBJ o 3MF.\r\n\r\nFlashFit non modifica il file originale. Gli OBJ restano invariati; dai 3MF vengono rimosse le impostazioni nascoste conservando geometria e trasformazioni.")
 		return
@@ -1136,6 +1283,28 @@ func renderAnalysis() {
 	}
 	lines = append(lines, "", "Prima di stampare controlla sempre l’anteprima layer nello slicer.")
 	setText(hAnalysis, strings.Join(lines, "\r\n"))
+}
+
+// The inspector shows the guarded settings the slicer will actually receive, so
+// the recommendation is kept on the state instead of being recomputed per paint.
+func updateRecommendation() {
+	app.recommendation = nil
+	if app.analysis == nil {
+		return
+	}
+	f, ok := selectedFilament()
+	if !ok {
+		return
+	}
+	printer, printerOK := selectedPrinter()
+	if !printerOK {
+		return
+	}
+	r, err := shared.RecommendForPrinterWithTexture(*app.analysis, f, printer, app.quality, app.texture)
+	if err != nil {
+		return
+	}
+	app.recommendation = &r
 }
 
 func autoSelectProfiles() {
@@ -1407,11 +1576,100 @@ func messageBox(owner uintptr, text, title string, flags uintptr) int {
 	r, _, _ := pMessageBox.Call(owner, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), flags)
 	return int(r)
 }
+// Where generated projects go.
+//
+// The old version joined the literal string "Documents" onto the home
+// directory and assumed the result was writable. Neither holds on Windows: the
+// folder name is localised, and OneDrive's Known Folder Move can redirect it
+// somewhere the plain path no longer resolves — which is how creating the
+// output directory failed with "the system cannot find the file specified" on a
+// machine whose Documents folder was plainly there.
+//
+// So the location is asked for rather than guessed, and each candidate is
+// proven writable before it is used. Somewhere to write always exists, because
+// the temporary directory is the last resort.
 func defaultOutputDir() string {
-	if h, e := os.UserHomeDir(); e == nil {
-		return filepath.Join(h, "Documents", "FlashFitAI")
+	for _, base := range outputDirCandidates() {
+		if base == "" {
+			continue
+		}
+		dir := filepath.Join(base, "FlashFitAI")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			continue
+		}
+		if !directoryWritable(dir) {
+			continue
+		}
+		return dir
 	}
+	// Every candidate failed; hand back the temp path and let the caller report
+	// the real error rather than pretending.
 	return filepath.Join(os.TempDir(), "FlashFitAI")
+}
+
+func outputDirCandidates() []string {
+	candidates := []string{knownFolderDocuments()}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, "Documents"))
+	}
+	candidates = append(candidates, os.Getenv("LOCALAPPDATA"), os.TempDir())
+	return candidates
+}
+
+// directoryWritable proves the directory accepts a file, which a directory that
+// merely exists does not: a redirected or policy-locked folder can be listed
+// and still refuse writes.
+func directoryWritable(dir string) bool {
+	probe, err := os.CreateTemp(dir, ".flashfit-write-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	probe.Close()
+	os.Remove(name)
+	return true
+}
+
+var pSHGetKnownFolderPath = syscall.NewLazyDLL("shell32.dll").NewProc("SHGetKnownFolderPath")
+
+// knownFolderDocuments asks Windows for the Documents folder, which is the only
+// way to get the right answer when it is localised or redirected.
+func knownFolderDocuments() string {
+	if pSHGetKnownFolderPath.Find() != nil {
+		return ""
+	}
+	// FOLDERID_Documents {FDD39AD0-238F-46AF-ADB4-6C85480369C7}
+	guid := [16]byte{
+		0xD0, 0x9A, 0xD3, 0xFD, 0x8F, 0x23, 0xAF, 0x46,
+		0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7,
+	}
+	var wide uintptr
+	ret, _, _ := pSHGetKnownFolderPath.Call(uintptr(unsafe.Pointer(&guid[0])), 0, 0, uintptr(unsafe.Pointer(&wide)))
+	if ret != 0 || wide == 0 {
+		return ""
+	}
+	defer pCoTaskMemFree.Call(wide)
+	return utf16PtrToString(wide)
+}
+
+var pCoTaskMemFree = syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
+
+// The path comes back in memory the shell allocated, not the Go heap, so it is
+// read through a single conversion and a bounded view rather than by walking a
+// raw address — one unchecked pointer step is enough to read past the end.
+const maxKnownFolderChars = 32768
+
+func utf16PtrToString(p uintptr) string {
+	if p == 0 {
+		return ""
+	}
+	units := unsafe.Slice((*uint16)(unsafe.Pointer(p)), maxKnownFolderChars)
+	for i, unit := range units {
+		if unit == 0 {
+			return syscall.UTF16ToString(units[:i])
+		}
+	}
+	return ""
 }
 func logPath() string {
 	base := os.Getenv("APPDATA")

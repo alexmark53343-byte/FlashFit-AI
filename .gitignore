@@ -1,2 +1,13 @@
 /dist/
 /appnative/rsrc_windows_*.syso
+
+# Build output. The release binary embeds a language model and is over a
+# gigabyte, so it belongs on a release page, never in the repository.
+/preview/
+*.exe
+
+# The embedded model payload. These are downloaded at build time by whoever
+# makes a release; a 1 GB blob cannot live in git history.
+/appnative/assets/*.gguf
+/appnative/assets/*.zip
+/appnative/assets/*.bak

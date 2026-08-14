@@ -1,71 +1,169 @@
 # FlashFit AI
 
-FlashFit AI is an Italian project that analyzes 3D models and automatically prepares guarded slicing settings for supported Flashforge and Bambu Lab printers.
+FlashFit AI reads a 3D model, works out how it should be printed on **your**
+machine with **your** filament, and hands the slicer a project that is already
+set up. It stops one step before slicing: the slicer still does the slicing.
 
-It is an independent project created and developed by a single Italian developer. FlashFit AI began with a simple frustration: advanced slicers are powerful, but finding the right combination of settings for every model and filament is still unnecessarily difficult. The project grew from that idea into a focused assistant that studies the geometry first and builds a safer, more appropriate printing strategy around it.
+It is an independent project by a single Italian developer. It began with a
+simple frustration — advanced slicers are powerful, but finding the right
+combination of settings for each model and material is still needlessly hard.
 
-The application inspects the actual mesh—including dimensions, topology, overhangs, surface orientation, fine details, separate bodies, and geometric proportions—then adapts print speed, acceleration, walls, infill, supports, cooling, adhesion, ironing, and material parameters.
+**Windows only.** The macOS build is discontinued and no longer supported.
 
-## Official downloads
+---
 
-- [Windows 11 x64 — FlashFit AI 4.3 Multi-Printer Engineering Beta](https://github.com/alexmark53343-byte/FlashFit-AI/raw/refs/heads/main/downloads/FlashFit-AI-Windows-11-x64.zip)
-- [macOS Apple Silicon — FlashFit AI 3.6 Beta](https://github.com/alexmark53343-byte/FlashFit-AI/releases/download/v3.6-beta/FlashFit-AI-Apple-Silicon.zip)
+## What it does
 
-## Current release
+**Reads the actual mesh.** Dimensions, triangle count, watertightness,
+degenerate faces, overhang ratio, bed contact, how solid the part is compared to
+its bounding box, and how many separate pieces the file holds. Every number the
+app acts on comes from the geometry, not from the file name.
 
-- Native Windows 11 x64 application with a professional three-plane Spatial workspace
-- Dedicated print workflow, 3D model stage and technical configuration inspector
-- Native macOS application for Apple Silicon (M1, M2, M3, M4 and newer), unchanged at version 3.6 Beta
-- Instant full-interface language switching: English, Italian, French, Spanish, and German
-- Responsive model and slicer discovery through isolated background workers
-- Persistent GDI backbuffers, bounded resize caches, and idle-aware minimal animation to prevent Windows UI stalls
-- Automated one-second responsiveness and GDI-lifetime stress test for Windows release candidates
-- Embedded Windows icon, DPI-aware manifest, and Explorer version metadata
-- Automatic detection and selection of 20 installed 0.4 mm printer families: 6 Flashforge and 14 Bambu Lab
-- Flash Studio Desktop, Bambu Studio and compatible Orca command-line engines
-- Printer-specific build-volume, hotend, bed, motion and acceleration guardrails
-- Vendor machine G-code, retraction, Flow Dynamics/Pressure Advance, purge, wipe and tool-change behavior preserved
-- Current Flashforge coverage: Creator 5, Creator 5 Pro, Adventurer 5M, Adventurer 5M Pro, AD5X and Guider 3 Ultra
-- Bambu Lab coverage: A1 mini, A1, A2L, P1P, P1S, P2S, X1, X1 Carbon, X1E, X2D, H2C, H2D, H2D Pro and H2S
-- Single-material optimization workflow; vendor multi-material mechanics remain untouched
-- STL, OBJ, and 3MF analysis
-- Fast, Balanced, and Perfect print strategies with duration-aware quality scaling
-- 23 built-in safe PLA/PETG baselines plus compatible official profiles discovered from the installed slicer
-- Optional measured per-spool overrides for temperature, volumetric flow, pressure advance, and flow ratio
-- Direct verified 3MF generation and opening in the selected slicer
+**Finds your printer and its profiles.** It locates the installed slicer and
+reads its machine, process and filament profiles — including the same printer at
+different nozzle sizes, listed separately so 0.25, 0.4, 0.6 and 0.8 mm are each
+selectable and the incompatible process profiles are filtered out.
 
-## Platform availability
+**Recognises what the part is.** A small language model runs locally, on CPU, in
+its own process. It is given the file name and a set of shape descriptors and
+answers with what the part is and which class it belongs to — hollow shell,
+decorative, mechanical, slender. It never chooses settings.
 
-FlashFit AI is currently available as **Windows 11 x64 4.3 Multi-Printer Engineering Beta** and **macOS Apple Silicon 3.6 Beta**.
+**Decides the settings deterministically.** The recognised class, the quality
+tier and your stated priority produce the adjustments in code, so the same part
+always gives the same profile. This division is deliberate: measured against
+real cases, a small model identifies parts reliably and reasons about numbers
+badly.
 
-## Beta notice
+**Checks the finished profile before you commit.** Settings are chosen one at a
+time but a print fails on how they combine, so the whole set is walked against
+the machine and the material: ringing from acceleration on tall parts, flow
+beyond what the filament can melt, bridges laid faster than they can set,
+cooling time on fine layers, temperatures outside either limit. A predicted
+defect costs nothing; the same defect found on the plate costs the print.
 
-This is a free beta. Always review the generated slicing preview before printing. Material behavior can vary between colors, production batches, storage conditions, and individual printers.
+**Splits a model that does not fit onto more plates.** A download is often
+several separate parts sharing one file. Rather than refusing it, or shrinking
+it, the geometry is separated into its actually disconnected pieces and packed
+over as many plates as the machine needs — at full size.
 
-ABS can warp and release fumes. Large ABS parts generally require an enclosure and suitable ventilation; software settings cannot replace those physical protections.
+**Writes a project the slicer opens with the settings applied.** Built on top of
+the installed profiles, with the FlashFit values laid over them, so vendor
+G-code, retraction, Pressure Advance, purge and calibration all survive.
 
-## Installation
+---
 
-1. Download `FlashFit-AI-Apple-Silicon.zip` using the macOS link above.
-2. Extract `FlashFit AI.app`.
-3. Move the app to the Applications folder.
-4. Open a model and verify the generated project in the selected slicer before printing.
+## Guardrails
 
-### Windows 11
+The principle behind the whole project: the app must not be able to produce an
+unsafe or nonsensical profile, not even by mistake.
 
-1. Download and extract `FlashFit-AI-Windows-11-x64.zip`.
-2. Run `FlashFit-AI-Windows-11.exe`.
-3. This test beta is not yet Authenticode-signed, so Windows SmartScreen may warn about an unknown publisher. Continue only when downloading from this official repository and compare the executable against the included `SHA256SUMS.txt`.
+- Vendor profiles remain the authority. Machine G-code, retraction, Flow
+  Dynamics / Pressure Advance, purge, wipe and calibration are never touched.
+- Every supported printer carries hard physical ceilings — build volume, maximum
+  speed, acceleration, hotend and bed temperature.
+- Only a closed list of parameters can be modified. Anything outside it fails
+  the build rather than being written.
+- Every generated profile is read back from disk and re-verified.
+- The produced 3MF is validated: geometry compared against the analysed model,
+  and the settings confirmed present.
 
-## Project origin
+**The AI has no authority over any of this.** It proposes a classification; a
+veto in code decides what survives. Advice that would change the layer height,
+speed the machine up, leave the envelope or exceed the tier's time budget is
+discarded whole. Advice that is merely too expensive is scaled back until it
+fits, rather than thrown away. With no model present, the results are identical
+to the deterministic path — there is a test that asserts exactly that.
 
-Designed and developed in Italy by one independent developer. 🇮🇹
+---
 
-The project is intentionally small and personal. The application and its profile engine are maintained exclusively by its original developer; this public repository distributes compiled beta releases and public documentation only.
+## The local AI
 
-## Windows 4.3 Spatial Multi-Printer UI
+A light model is built into the application and works out of the box, offline.
+There is nothing to install and nothing to configure.
 
-![FlashFit AI Spatial UI running on Windows 11](docs/FlashFit-AI-Spatial-4.1-Windows.png)
+Two buttons in the toolbar switch between the **light** model and a **stronger**
+one, if you have placed heavier weights in the models folder. A status chip
+shows what the model is doing: loading, online, working, or unavailable — and
+only the "working" state animates, so a still dot always means idle.
 
-<img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 56 24" src="https://github.com/user-attachments/assets/735e2d0e-5677-4f57-b83b-8d521991f046" />
-<img width="916" height="578" alt="Screenshot 2026-08-04 alle 13 55 55" src="https://github.com/user-attachments/assets/53450b25-8192-40c9-bb5c-7928c4536b80" />
+The choice does not affect print quality. The settings are computed in code
+either way; a stronger model simply recognises more unusual parts. That is what
+makes the light model a real option on a machine with little memory rather than
+a downgrade.
+
+The model server runs as a child process inside a Windows job object with
+kill-on-close, so it can never be left behind — not by a crash, not by a forced
+quit.
+
+---
+
+## Requirements
+
+- Windows 11 x64
+- Flash Studio Desktop, Bambu Studio, or a compatible Orca build, with an
+  official profile installed for your printer
+- No GPU required. The model runs on CPU and uses a GPU only if one is present.
+
+Installations whose slicer exposes no command line are supported: the project is
+written directly and opened, and you press Slice yourself.
+
+---
+
+## Supported printers
+
+**Flashforge** — Creator 5, Creator 5 Pro, Adventurer 5M, Adventurer 5M Pro,
+AD5X, Guider 3 Ultra
+
+**Bambu Lab** — A1 mini, A1, A2L, P1P, P1S, P2S, X1, X1 Carbon, X1E, X2D, H2C,
+H2D, H2D Pro, H2S
+
+Single-material workflow. Vendor multi-material mechanics are left untouched.
+
+---
+
+## Interface
+
+Native Win32 and GDI: no Electron, no browser, no GPU runtime. Light and dark
+themes, five languages (Italian, English, French, Spanish, German), an
+orbitable software-rendered view of the real geometry, and a status bar carrying
+filament length, duration and weight.
+
+---
+
+## Estimates
+
+Time and weight are estimates, and they are labelled as such. The time model is
+calibrated against real sliced results and is currently within roughly ten
+percent on the prints it has been checked against; it should be treated as a
+guide, not as the slicer's own number. Weight uses the density of the filament
+actually selected.
+
+---
+
+## Building
+
+```
+go build -tags embedmodel -trimpath -ldflags="-s -w -H=windowsgui" -o "FlashFit AI.exe" ./appnative
+```
+
+The `embedmodel` tag embeds the language model, which the release build needs
+and which makes the binary about a gigabyte. Without the tag the build is a few
+megabytes and looks for weights in the models folder instead — that is the build
+to use while developing.
+
+Run the end-to-end self-check with:
+
+```
+go run ./appnative --self-test
+```
+
+---
+
+## Status
+
+Beta. Inspect the generated project, the sliced time and the layer preview
+before printing.
+
+The executable is not yet Authenticode-signed, so Windows SmartScreen will show
+an unknown publisher. Download only from this repository.

@@ -44,6 +44,7 @@ var (
 	pDeleteDC           = gdi32.NewProc("DeleteDC")
 	spatialMSImg32      = syscall.NewLazyDLL("msimg32.dll")
 	pAlphaBlend         = spatialMSImg32.NewProc("AlphaBlend")
+	pGradientFill       = spatialMSImg32.NewProc("GradientFill")
 )
 
 func initSpatialBenchyAsset() {

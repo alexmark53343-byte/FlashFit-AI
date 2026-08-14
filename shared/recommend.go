@@ -100,6 +100,7 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 			linearLimit = math.Min(linearLimit, 60)
 		}
 	}
+	p = applyAdvisor(p, a, quality, printer)
 	capSpeed := func(request, width float64) float64 {
 		cap := safeMVS / (p.Layer * width)
 		return math.Max(10, math.Min(request, math.Min(linearLimit, math.Floor(cap))))
@@ -186,6 +187,15 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		"travel_acceleration": fmt0(math.Min(5000, printer.MaxAcceleration*0.45)), "travel_speed": fmt0(math.Min(350, printer.MaxTravelSpeed*0.75)), "bridge_flow": fmt2(bridgeFlow),
 		"avoid_crossing_wall": "1", "reduce_infill_retraction": "0", "overhang_1_4_speed": "0", "overhang_2_4_speed": fmt0(math.Min(outer, 42)), "overhang_3_4_speed": fmt0(math.Min(bridge+8, 34)), "overhang_4_4_speed": fmt0(math.Min(bridge, 24)),
 		"enable_support": bool01(a.SupportSuggested), "support_type": supportType(a), "support_threshold_angle": "45", "brim_type": brimType(a), "brim_width": brimWidth(a),
+		// Supports that will not come off ruin the surface they were protecting,
+		// which matters most on the tier chosen for looks. These leave a
+		// deliberate gap under and around them and space the interface out, so
+		// they peel rather than weld.
+		"support_top_z_distance":     supportTopGap(quality, p.Layer),
+		"support_bottom_z_distance":  supportTopGap(quality, p.Layer),
+		"support_object_xy_distance": supportSideGap(quality),
+		"support_interface_spacing":  supportInterfaceSpacing(quality),
+		"support_interface_loop_pattern": "0",
 		"ironing_type": "no ironing", "ironing_pattern": "rectilinear", "ironing_flow": "10%", "ironing_spacing": "0.1", "ironing_inset": "0.12", "ironing_speed": "24",
 		"fuzzy_skin": "none", "fuzzy_skin_thickness": "0", "fuzzy_skin_point_distance": "0.3", "fuzzy_skin_first_layer": "0",
 	}
@@ -306,6 +316,251 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 	}, nil
 }
 
+// The advisor is deliberately split in two halves: a proposer that may suggest
+// anything, and a veto that decides whether the suggestion is allowed to stand.
+// Only the veto is trusted. That is what makes "it must never make things
+// worse" a property of the architecture rather than a promise about the
+// proposer's quality — and it is the seat any future model plugs into, without
+// gaining the power to produce an unsafe or slower profile.
+//
+// A proposal is rejected when it would:
+//   - push shell or density outside the hand-checked envelope, or
+//   - cost more time than the quality tier is allowed to spend.
+func applyAdvisor(base qualityPreset, a ModelAnalysis, quality string, printer PrinterProfile) qualityPreset {
+	LastAdvisorOutcome = AdvisorOutcome{}
+	// The model is consulted off the caller's thread. A cached answer is used
+	// straight away; a miss starts a request and falls through to the rules, so
+	// this function never waits on the network.
+	if deltas, ok := lookupOrRequestAdvice(advisorConfigFromEnv(), a, quality, base); ok {
+		LastAdvisorOutcome = AdvisorOutcome{Used: true, Object: deltas.Object, Reason: deltas.Reason}
+		if proposal, scaled, accepted := admitAdvice(base, deltas, quality); accepted {
+			LastAdvisorOutcome.Accepted = true
+			LastAdvisorOutcome.Scaled = scaled
+			return proposal
+		}
+		// Unsafe advice gets no second chance at the profile: fall back to the
+		// rules, which face the same veto below.
+		LastAdvisorOutcome.Detail = advisorRejectionReason(base, applyAdvisorDeltas(base, deltas), quality)
+	}
+	proposal := base
+	tuneForCategory(&proposal, a, quality)
+	if !advisorProposalAllowed(base, proposal, quality) {
+		return base
+	}
+	return proposal
+}
+
+// admitAdvice decides what, if anything, of the model's advice survives.
+//
+// The veto separates two very different failures. Breaking a *safety* rule —
+// changing the layer height, speeding the machine up, leaving the envelope —
+// is disqualifying: that advice is thrown away whole, because a half-applied
+// unsafe suggestion is its own kind of wrong.
+//
+// Merely costing too much time is not a safety failure. There the model's
+// direction is fine and only its magnitude is too bold, so the deltas are
+// scaled back until they fit the tier's budget. Discarding those outright was
+// wasteful: the user saw "advice rejected" and got nothing, when a gentler
+// version of the same advice was perfectly acceptable.
+//
+// Returns the preset to use, whether it had to be toned down, and whether any
+// of it was admitted at all.
+func admitAdvice(base qualityPreset, deltas advisorDeltas, quality string) (qualityPreset, bool, bool) {
+	full := applyAdvisorDeltas(base, deltas)
+	if !advisorProposalSafe(base, full) {
+		return base, false, false
+	}
+	if advisorWithinBudget(base, full, quality) {
+		return full, false, true
+	}
+	trimmed, changed := trimToBudget(base, full, quality)
+	if changed && advisorProposalSafe(base, trimmed) && advisorWithinBudget(base, trimmed, quality) {
+		return trimmed, true, true
+	}
+	// Nothing of it fits: the base preset already spends what this tier allows.
+	return base, false, false
+}
+
+// trimToBudget gives back the most of the advice that the tier can afford.
+//
+// Scaling every delta by the same factor does not work: rounding keeps each one
+// at a minimum of a whole wall or layer, so a bold proposal stays over budget
+// even at a quarter strength. Instead the single most expensive increase is
+// given up at a time, which always converges and keeps whatever was cheap.
+func trimToBudget(base, proposal qualityPreset, quality string) (qualityPreset, bool) {
+	changed := false
+	for i := 0; i < 64 && !advisorWithinBudget(base, proposal, quality); i++ {
+		// Cost per unit, matching presetWorkIndex.
+		type lever struct {
+			weight float64
+			give   func()
+		}
+		levers := []lever{
+			{1.6, func() { proposal.Walls-- }},
+			{0.6, func() { proposal.TopLayers-- }},
+			{0.4, func() { proposal.BottomLayers-- }},
+			{0.35, func() { proposal.InfillPct-- }},
+		}
+		above := []bool{
+			proposal.Walls > base.Walls,
+			proposal.TopLayers > base.TopLayers,
+			proposal.BottomLayers > base.BottomLayers,
+			proposal.InfillPct > base.InfillPct,
+		}
+		best := -1
+		for index := range levers {
+			if !above[index] {
+				continue
+			}
+			if best < 0 || levers[index].weight > levers[best].weight {
+				best = index
+			}
+		}
+		if best < 0 {
+			// Nothing left to give back: the proposal is at or below base and
+			// still over budget, which means base itself is the ceiling.
+			return base, false
+		}
+		levers[best].give()
+		changed = true
+	}
+	return proposal, changed
+}
+
+// advisorProposalSafe covers the rules that are never negotiable.
+func advisorProposalSafe(base, proposal qualityPreset) bool {
+	switch {
+	case proposal.Layer != base.Layer:
+		return false
+	case proposal.Walls < 2 || proposal.Walls > 6:
+		return false
+	case proposal.TopLayers < 3 || proposal.TopLayers > 10:
+		return false
+	case proposal.BottomLayers < 3 || proposal.BottomLayers > 10:
+		return false
+	case proposal.InfillPct < 8 || proposal.InfillPct > 40:
+		return false
+	case proposal.Outer > base.Outer || proposal.Inner > base.Inner || proposal.Bridge > base.Bridge:
+		return false
+	case proposal.OuterAccel > base.OuterAccel || proposal.InnerAccel > base.InnerAccel:
+		return false
+	}
+	return true
+}
+
+func advisorWithinBudget(base, proposal qualityPreset, quality string) bool {
+	baseWork := presetWorkIndex(base)
+	if baseWork <= 0 {
+		return false
+	}
+	return presetWorkIndex(proposal)/baseWork <= advisorTimeBudget(quality)
+}
+
+// advisorRejectionReason names the rule a proposal broke, so the interface can
+// say why the model's advice was refused rather than only that it was.
+func advisorRejectionReason(base, proposal qualityPreset, quality string) string {
+	switch {
+	case proposal.Layer != base.Layer:
+		return "altezza layer"
+	case proposal.Walls < 2 || proposal.Walls > 6:
+		return "pareti fuori limite"
+	case proposal.TopLayers < 3 || proposal.TopLayers > 10 || proposal.BottomLayers < 3 || proposal.BottomLayers > 10:
+		return "gusci fuori limite"
+	case proposal.InfillPct < 8 || proposal.InfillPct > 40:
+		return "infill fuori limite"
+	case proposal.Outer > base.Outer || proposal.Inner > base.Inner || proposal.Bridge > base.Bridge:
+		return "velocità aumentata"
+	case proposal.OuterAccel > base.OuterAccel || proposal.InnerAccel > base.InnerAccel:
+		return "accelerazione aumentata"
+	default:
+		return "oltre il budget tempo"
+	}
+}
+
+// advisorTimeBudget is how much extra shell/density time a tier may accept from
+// the advisor. Fast prints exist to be fast, so their budget is the tightest.
+func advisorTimeBudget(quality string) float64 {
+	switch quality {
+	case "low":
+		return 1.06
+	case "perfect":
+		return 1.20
+	default:
+		return 1.12
+	}
+}
+
+// presetWorkIndex is a monotone stand-in for how long a preset takes: extra
+// walls, solid layers and density all add material at a similar cost, so their
+// weighted sum orders two presets the same way a real estimate would.
+func presetWorkIndex(p qualityPreset) float64 {
+	return float64(p.Walls)*1.6 + float64(p.TopLayers)*0.6 + float64(p.BottomLayers)*0.4 + float64(p.InfillPct)*0.35
+}
+
+// advisorProposalAllowed is the full check: safe and affordable.
+func advisorProposalAllowed(base, proposal qualityPreset, quality string) bool {
+	return advisorProposalSafe(base, proposal) && advisorWithinBudget(base, proposal, quality)
+}
+
+// tuneForCategory turns the recognised object type into actual settings. The
+// quality preset decides how fine the print is; the category decides what the
+// part needs — a large shell wastes hours on infill it will never use, while a
+// miniature needs shell and slow walls far more than it needs density.
+//
+// Adjustments are deliberately bounded and never touch layer height, so the
+// chosen quality still governs time and finish.
+func tuneForCategory(p *qualityPreset, a ModelAnalysis, quality string) {
+	clampInt := func(value, low, high int) int {
+		if value < low {
+			return low
+		}
+		if value > high {
+			return high
+		}
+		return value
+	}
+	switch a.Category {
+	case "Miniatura dettagliata":
+		// Detail lives in the shell. Buy top layers, spend nothing on density.
+		p.Walls = clampInt(p.Walls+1, 2, 6)
+		p.TopLayers = clampInt(p.TopLayers+1, 3, 10)
+		p.InfillPct = clampInt(p.InfillPct-4, 8, 40)
+
+	case "Forma alta o sottile":
+		// Tall parts fail by wobbling or snapping, not by lacking infill.
+		p.Walls = clampInt(p.Walls+1, 2, 6)
+		p.BottomLayers = clampInt(p.BottomLayers+1, 3, 10)
+		p.InfillPct = clampInt(p.InfillPct+3, 8, 40)
+		p.Outer = math.Min(p.Outer, 45)
+		p.OuterAccel = math.Min(p.OuterAccel, 1200)
+
+	case "Geometria con molti sbalzi":
+		// Overhangs are bridged, so slow the bridge and thicken what sits on it.
+		p.Bridge = math.Min(p.Bridge, 22)
+		p.BottomLayers = clampInt(p.BottomLayers+1, 3, 10)
+		p.InfillPct = clampInt(p.InfillPct+2, 8, 40)
+
+	case "Oggetto grande":
+		// The main lever on time. A big shell needs walls, not density; dropping
+		// infill is what keeps a large part from turning into a day-long job.
+		p.InfillPct = clampInt(p.InfillPct-4, 8, 40)
+		p.Walls = clampInt(p.Walls+1, 2, 6)
+		if quality != "perfect" {
+			p.TopLayers = clampInt(p.TopLayers-1, 3, 10)
+		}
+
+	case "Superficie complessa":
+		p.TopLayers = clampInt(p.TopLayers+1, 3, 10)
+		p.Outer = math.Min(p.Outer, 42)
+		p.OuterAccel = math.Min(p.OuterAccel, 1100)
+
+	default: // Oggetto tecnico/decorativo
+		// Functional parts are the one case where density earns its time.
+		p.InfillPct = clampInt(p.InfillPct+5, 8, 40)
+		p.Walls = clampInt(p.Walls+1, 2, 6)
+	}
+}
+
 func applyPrinterMotionGuardrails(p *qualityPreset, printer PrinterProfile, a ModelAnalysis) {
 	if p == nil {
 		return
@@ -349,9 +604,22 @@ func EstimateBalancedMinutes(a ModelAnalysis, f Filament) float64 {
 	}
 	// Approximate material in walls/top-bottom plus 15% gyroid infill.
 	extrudedMM3 := area*1.05 + volume*0.15
-	effectiveFlow := math.Min(5.2, f.MaxVolumetricSpeed*0.36)
+
+	// Two allowances used to be far too cautious, and together they made every
+	// estimate about half again too long. Measured against a real slice — a
+	// 911 at 0.4 mm on the Perfect tier: 20 h 14 m predicted, 13 h 14 m actual —
+	// the flow derating and the overhead padding account for almost exactly the
+	// gap, so both were brought closer to what a slicer really achieves.
+	//
+	// This is calibrated against one print. It is a large improvement on being
+	// 53% out, not a claim of precision, and it should be re-checked as more
+	// real times come in.
+	const flowUtilisation = 0.47 // was 0.36: slicers hold closer to the limit
+	const overheadFactor = 1.15  // was 1.35: travel and acceleration cost less
+
+	effectiveFlow := math.Min(5.2, f.MaxVolumetricSpeed*flowUtilisation)
 	effectiveFlow = math.Max(2.4, effectiveFlow)
-	minutes := extrudedMM3/effectiveFlow/60*1.35 + math.Max(0, a.Extents[2])/0.20*0.025 + 4
+	minutes := extrudedMM3/effectiveFlow/60*overheadFactor + math.Max(0, a.Extents[2])/0.20*0.025 + 4
 	if a.SupportSuggested {
 		minutes *= 1.12
 	}
@@ -359,6 +627,39 @@ func EstimateBalancedMinutes(a ModelAnalysis, f Filament) float64 {
 		minutes += 2
 	}
 	return math.Max(8, minutes)
+}
+
+// Support release settings.
+//
+// A support that fuses to the part is worse than no support: removing it tears
+// the surface it existed to protect. The gap has to scale with the layer height
+// — a fixed distance that releases cleanly at 0.20 mm is barely a gap at 0.14 —
+// and the finer the tier, the more the finish is worth protecting.
+func supportTopGap(quality string, layer float64) string {
+	multiplier := 1.0
+	if quality == "perfect" {
+		// Chosen for looks, so bias towards clean release over support quality.
+		multiplier = 1.5
+	}
+	gap := layer * multiplier
+	// Below about 0.15 mm the gap stops releasing; above 0.35 the support stops
+	// supporting.
+	return fmt2(math.Max(0.15, math.Min(0.35, gap)))
+}
+
+func supportSideGap(quality string) string {
+	if quality == "perfect" {
+		return "0.45"
+	}
+	return "0.35"
+}
+
+// Wider interface spacing means fewer welded contact points.
+func supportInterfaceSpacing(quality string) string {
+	if quality == "perfect" {
+		return "0.35"
+	}
+	return "0.2"
 }
 
 func durationClassForMinutes(minutes float64) string {

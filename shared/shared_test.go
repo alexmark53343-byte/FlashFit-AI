@@ -457,8 +457,16 @@ func TestOpenMeshRejected(t *testing.T) {
 	if a.Watertight {
 		t.Fatal("open mesh accepted")
 	}
-	if ValidateAnalysis(a) == nil {
-		t.Fatal("open mesh not blocked")
+	// Policy change, deliberate: an open mesh is reported but no longer refused.
+	// Blocking on it made the app unusable with ordinary downloaded models —
+	// one real file was rejected over 4 malformed triangles in 746,632 — and
+	// every slicer closes these on load. The defect still has to be detected
+	// and surfaced, which is what the Watertight flag above guarantees.
+	if err := ValidateAnalysis(a); err != nil {
+		t.Fatalf("una mesh aperta deve passare con avviso, non essere bloccata: %v", err)
+	}
+	if len(a.Warnings) == 0 {
+		t.Fatal("una mesh aperta deve produrre un avviso")
 	}
 }
 func TestOversizedModelRejected(t *testing.T) {

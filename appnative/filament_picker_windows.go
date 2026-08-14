@@ -1,4 +1,4 @@
-//go:build windows
+﻿//go:build windows
 
 package main
 
@@ -160,25 +160,21 @@ func drawFilamentPickerScene(hdc uintptr, client rect) {
 	filamentLayout = calculateFilamentLayout(w, h)
 	clampFilamentScroll()
 
-	background := brush(rgb(247, 249, 253))
-	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
-	pDeleteObject.Call(background)
-	drawSpatialGlow(hdc, w*18/100, 28, 260, 170, rgb(213, 224, 255), 31)
-	drawSpatialGlow(hdc, w*84/100, h-44, 330, 230, rgb(222, 212, 255), 23)
-	drawSpatialGlow(hdc, w*56/100, 88, 250, 155, rgb(190, 222, 255), 19)
+	fillCanvas(hdc, client)
+	drawAmbientLight(hdc, w, h)
 
-	text(hdc, tr("filamentEyebrow"), rect{30, 18, w - 30, 40}, hFontSmall, rgb(88, 103, 190), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(hdc, tr("filamentTitle"), rect{30, 41, w - 30, 77}, hFontTitle, rgb(23, 28, 40), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, tr("filamentSubtitle"), rect{80, 76, w - 80, 100}, hFontSmall, rgb(91, 102, 128), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	eyebrow(hdc, tr("filamentEyebrow"), rect{30, 18, w - 30, 40}, DT_CENTER|DT_VCENTER)
+	text(hdc, tr("filamentTitle"), rect{30, 41, w - 30, 77}, hFontTitle, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("filamentSubtitle"), rect{80, 76, w - 80, 100}, hFontSmall, th.textSecondary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 
-	drawSpatialSoftShadow(hdc, filamentLayout.search, 22, 10, 5, rgb(62, 75, 122), 18)
-	drawSpatialRoundedMaterial(hdc, filamentLayout.search, 22, rgb(255, 255, 255), rgb(247, 249, 253), rgb(224, 230, 242))
-	drawSearchIcon(hdc, filamentLayout.search.Left+28, (filamentLayout.search.Top+filamentLayout.search.Bottom)/2, rgb(89, 104, 185))
+	shade(hdc, filamentLayout.search, 22, 10, 5, 18)
+	card(hdc, filamentLayout.search, 22)
+	drawSearchIcon(hdc, filamentLayout.search.Left+28, (filamentLayout.search.Top+filamentLayout.search.Bottom)/2, th.textMuted)
 
-	drawSpatialSoftShadow(hdc, filamentLayout.list, 24, 13, 7, rgb(62, 75, 122), 23)
-	drawSpatialRoundedMaterial(hdc, filamentLayout.list, 24, rgb(255, 255, 255), rgb(244, 247, 252), rgb(225, 231, 242))
+	shade(hdc, filamentLayout.list, 24, 13, 7, 23)
+	card(hdc, filamentLayout.list, 24)
 	if len(app.filtered) == 0 {
-		text(hdc, tr("noFilament"), inset(filamentLayout.list, 24), hFontBody, rgb(91, 102, 128), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(hdc, tr("noFilament"), inset(filamentLayout.list, 24), hFontBody, th.textSecondary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	} else {
 		for i, row := range filamentLayout.rows {
 			index := filamentPickerScroll + i
@@ -189,43 +185,38 @@ func drawFilamentPickerScene(hdc uintptr, client rect) {
 		}
 	}
 	if filamentPickerScroll > 0 {
-		text(hdc, "^", rect{filamentLayout.list.Left, filamentLayout.list.Top + 2, filamentLayout.list.Right, filamentLayout.list.Top + 22}, hFontSmall, rgb(105, 117, 145), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(hdc, "▲", rect{filamentLayout.list.Left, filamentLayout.list.Top + 2, filamentLayout.list.Right, filamentLayout.list.Top + 22}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 	}
 	if filamentPickerScroll+len(filamentLayout.rows) < len(app.filtered) {
-		text(hdc, "v", rect{filamentLayout.list.Left, filamentLayout.list.Bottom - 22, filamentLayout.list.Right, filamentLayout.list.Bottom - 2}, hFontSmall, rgb(105, 117, 145), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(hdc, "▼", rect{filamentLayout.list.Left, filamentLayout.list.Bottom - 22, filamentLayout.list.Right, filamentLayout.list.Bottom - 2}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 	}
 
 	drawFilamentDetailsCard(hdc, filamentLayout.details)
 
-	drawSpatialRoundedMaterial(hdc, filamentLayout.close, 22, rgb(255, 255, 255), rgb(244, 247, 252), rgb(220, 226, 239))
-	text(hdc, tr("close"), inset(filamentLayout.close, 7), hFontButton, rgb(56, 67, 91), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	drawSpatialSoftShadow(hdc, filamentLayout.apply, 22, 11, 6, rgb(71, 66, 204), 42)
-	drawSpatialRoundedMaterial(hdc, filamentLayout.apply, 22, rgb(77, 147, 255), rgb(111, 67, 241), rgb(135, 151, 255))
+	card(hdc, filamentLayout.close, 22)
+	text(hdc, tr("close"), inset(filamentLayout.close, 7), hFontButton, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	shade(hdc, filamentLayout.apply, 22, 11, 6, 42)
+	accentFill(hdc, filamentLayout.apply, 22)
 	drawFilamentButtonShimmer(hdc, filamentLayout.apply)
-	text(hdc, tr("useFilament")+"   >", inset(filamentLayout.apply, 8), hFontButton, rgb(255, 255, 255), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("useFilament"), inset(filamentLayout.apply, 8), hFontButton, th.textOnAccent, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func drawSearchIcon(hdc uintptr, cx, cy int32, color uintptr) {
-	circle(hdc, cx-3, cy-3, 8, rgb(255, 255, 255), color)
+	circle(hdc, cx-3, cy-3, 8, th.surface, color)
 	line(hdc, cx+4, cy+4, cx+12, cy+12, color, 2)
 }
 
 func drawFilamentRow(hdc uintptr, row rect, f shared.Filament, selected bool) {
-	stroke := rgb(224, 230, 241)
-	top := rgb(255, 255, 255)
-	bottom := rgb(247, 249, 253)
-	titleColor := rgb(31, 37, 52)
-	subColor := rgb(93, 104, 130)
+	titleColor := th.textPrimary
+	subColor := th.textMuted
 	if selected {
-		drawSpatialGlow(hdc, row.Left+50, (row.Top+row.Bottom)/2, 75, 46, materialColor(f.Material), 30)
-		drawSpatialSoftShadow(hdc, row, 20, 11, 5, rgb(74, 68, 205), 33)
-		stroke = rgb(107, 124, 245)
-		top = rgb(250, 252, 255)
-		bottom = rgb(239, 244, 255)
-		titleColor = rgb(24, 32, 76)
-		subColor = rgb(73, 87, 168)
+		glow(hdc, row.Left+50, (row.Top+row.Bottom)/2, 75, 46, materialColor(f.Material), 30)
+		shade(hdc, row, 20, 11, 5, 33)
+		accentTint(hdc, row, 20)
+		subColor = th.accentText
+	} else {
+		sunkenChip(hdc, row, 20)
 	}
-	drawSpatialRoundedMaterial(hdc, row, 20, top, bottom, stroke)
 	drawFilamentSpool(hdc, rect{row.Left + 15, row.Top + 13, row.Left + 63, row.Bottom - 13}, materialColor(f.Material))
 	title := strings.TrimSpace(f.Brand + " " + f.Product)
 	if title == "" {
@@ -244,28 +235,28 @@ func drawFilamentRow(hdc uintptr, row rect, f shared.Filament, selected bool) {
 	text(hdc, meta, rect{row.Left + 76, row.Top + 37, row.Right - 18, row.Bottom - 9}, hFontSmall, subColor, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
-func drawFilamentDetailsCard(hdc uintptr, card rect) {
-	drawSpatialSoftShadow(hdc, card, 24, 14, 7, rgb(62, 75, 122), 23)
-	drawSpatialRoundedMaterial(hdc, card, 24, rgb(255, 255, 255), rgb(244, 247, 252), rgb(225, 231, 242))
-	inner := inset(card, 22)
+func drawFilamentDetailsCard(hdc uintptr, cardRect rect) {
+	shade(hdc, cardRect, 24, 14, 7, 23)
+	card(hdc, cardRect, 24)
+	inner := inset(cardRect, 22)
 	f, ok := selectedFilament()
 	if !ok {
-		text(hdc, tr("noFilament"), inner, hFontBody, rgb(91, 102, 128), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(hdc, tr("noFilament"), inner, hFontBody, th.textSecondary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		return
 	}
-	drawSpatialGlow(hdc, inner.Right-30, inner.Top+38, 110, 90, materialColor(f.Material), 24)
+	glow(hdc, inner.Right-30, inner.Top+38, 110, 90, materialColor(f.Material), 24)
 	drawFilamentSpool(hdc, rect{inner.Left, inner.Top, inner.Left + 86, inner.Top + 86}, materialColor(f.Material))
 	title := strings.TrimSpace(f.Brand + " " + f.Product)
 	if title == "" {
 		title = f.Material
 	}
-	text(hdc, title, rect{inner.Left + 104, inner.Top + 2, inner.Right, inner.Top + 34}, hFontHeading, rgb(25, 31, 45), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, strings.TrimSpace(f.Material+"  "+f.Variant), rect{inner.Left + 104, inner.Top + 35, inner.Right, inner.Top + 61}, hFontSmall, rgb(84, 96, 125), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, title, rect{inner.Left + 104, inner.Top + 2, inner.Right, inner.Top + 34}, hFontHeading, th.textPrimary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, strings.TrimSpace(f.Material+"  "+f.Variant), rect{inner.Left + 104, inner.Top + 35, inner.Right, inner.Top + 61}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	source := f.Source
 	if f.OfficialProfile {
 		source = "Flash Studio"
 	}
-	text(hdc, source, rect{inner.Left + 104, inner.Top + 61, inner.Right, inner.Top + 86}, hFontSmall, rgb(104, 115, 140), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, source, rect{inner.Left + 104, inner.Top + 61, inner.Right, inner.Top + 86}, hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 
 	gridTop := inner.Top + 108
 	colGap := int32(12)
@@ -288,32 +279,32 @@ func drawFilamentDetailsCard(hdc uintptr, card rect) {
 		drying = fmt.Sprintf("%.0f C / %.0f h", f.DryTemperature, f.DryHours)
 	}
 	infoTop := gridTop + 150
-	text(hdc, tr("calibration")+": "+calibration, rect{inner.Left, infoTop, inner.Right, infoTop + 28}, hFontSmall, rgb(80, 92, 122), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, tr("drying")+": "+drying, rect{inner.Left, infoTop + 30, inner.Right, infoTop + 58}, hFontSmall, rgb(80, 92, 122), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("calibration")+": "+calibration, rect{inner.Left, infoTop, inner.Right, infoTop + 28}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, tr("drying")+": "+drying, rect{inner.Left, infoTop + 30, inner.Right, infoTop + 58}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	if app.filamentMatchTotal > len(app.filtered) {
-		text(hdc, trf("shownResults", len(app.filtered), app.filamentMatchTotal), rect{inner.Left, inner.Bottom - 34, inner.Right, inner.Bottom - 8}, hFontSmall, rgb(103, 113, 138), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(hdc, trf("shownResults", len(app.filtered), app.filamentMatchTotal), rect{inner.Left, inner.Bottom - 34, inner.Right, inner.Bottom - 8}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	}
 }
 
 func drawFilamentMetric(hdc uintptr, r rect, label, value, sub string) {
-	drawSpatialRoundedMaterial(hdc, r, 17, rgb(250, 252, 255), rgb(241, 245, 253), rgb(224, 230, 242))
-	text(hdc, label, rect{r.Left + 12, r.Top + 6, r.Right - 12, r.Top + 24}, hFontSmall, rgb(99, 109, 134), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, value, rect{r.Left + 12, r.Top + 24, r.Right - 12, r.Top + 42}, hFontBody, rgb(35, 46, 75), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, sub, rect{r.Left + 12, r.Top + 41, r.Right - 12, r.Bottom - 4}, hFontSmall, rgb(95, 106, 130), DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	sunkenChip(hdc, r, 17)
+	text(hdc, label, rect{r.Left + 12, r.Top + 6, r.Right - 12, r.Top + 24}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, value, rect{r.Left + 12, r.Top + 24, r.Right - 12, r.Top + 42}, hFontBody, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, sub, rect{r.Left + 12, r.Top + 41, r.Right - 12, r.Bottom - 4}, hFontSmall, th.textMuted, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func drawFilamentSpool(hdc uintptr, box rect, color uintptr) {
-	drawSpatialRoundedMaterial(hdc, box, 16, rgb(244, 247, 255), rgb(228, 235, 252), rgb(207, 217, 242))
+	drawSpatialRoundedMaterial(hdc, box, 16, th.surface, th.surfaceAlt, th.stroke)
 	cx, cy := (box.Left+box.Right)/2, (box.Top+box.Bottom)/2
 	r := min32(width(box), height(box)) / 3
-	circle(hdc, cx, cy, r+6, rgb(250, 252, 255), color)
+	circle(hdc, cx, cy, r+6, th.surface, color)
 	circle(hdc, cx, cy, r, color, color)
-	circle(hdc, cx, cy, r/3, rgb(250, 252, 255), rgb(210, 219, 242))
+	circle(hdc, cx, cy, r/3, th.surface, th.stroke)
 	for i := 0; i < 4; i++ {
 		a := float64(i)*math.Pi/2 + float64(filamentPickerAnimationTick)*0.015
 		x := cx + int32(math.Cos(a)*float64(r*2/3))
 		y := cy + int32(math.Sin(a)*float64(r*2/3))
-		line(hdc, cx, cy, x, y, rgb(250, 252, 255), 1)
+		line(hdc, cx, cy, x, y, th.surface, 1)
 	}
 }
 

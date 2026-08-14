@@ -81,15 +81,56 @@ func AnalyzeSTL(path string) (ModelAnalysis, error) {
 	return out, nil
 }
 
+// readSTLTriangles returns the mesh itself rather than a summary of it, for the
+// paths that need to rewrite the geometry instead of measure it. It reuses the
+// same two readers the analysis uses, so there is one STL parser, not two.
+func readSTLTriangles(path string) ([]triangle, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("modello non leggibile: %w", err)
+	}
+	if st.Size() <= 84 || st.Size() > MaxModelBytes {
+		return nil, errors.New("dimensione STL non valida")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	first := make([]byte, 84)
+	if _, err = io.ReadFull(f, first); err != nil {
+		return nil, err
+	}
+	count := int(binary.LittleEndian.Uint32(first[80:84]))
+	if count > 0 && count <= MaxTriangles && int64(84)+int64(count)*50 == st.Size() {
+		if _, err = f.Seek(84, io.SeekStart); err != nil {
+			return nil, err
+		}
+		return readBinarySTLTriangles(f, count)
+	}
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return readASCIISTLTriangles(f)
+}
+
 func analyzeBinarySTL(r io.Reader, count int) (ModelAnalysis, error) {
+	tris, err := readBinarySTLTriangles(r, count)
+	if err != nil {
+		return ModelAnalysis{}, err
+	}
+	return analyzeTriangles(tris)
+}
+
+func readBinarySTLTriangles(r io.Reader, count int) ([]triangle, error) {
 	if count <= 0 || count > MaxTriangles {
-		return ModelAnalysis{}, fmt.Errorf("numero triangoli non sicuro: %d", count)
+		return nil, fmt.Errorf("numero triangoli non sicuro: %d", count)
 	}
 	buf := make([]byte, 50)
 	tris := make([]triangle, 0, min(count, 250000))
 	for i := 0; i < count; i++ {
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return ModelAnalysis{}, fmt.Errorf("STL troncato al triangolo %d", i+1)
+			return nil, fmt.Errorf("STL troncato al triangolo %d", i+1)
 		}
 		t := triangle{
 			A: vec3{float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[12:16]))), float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[16:20]))), float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[20:24])))},
@@ -98,10 +139,18 @@ func analyzeBinarySTL(r io.Reader, count int) (ModelAnalysis, error) {
 		}
 		tris = append(tris, t)
 	}
-	return analyzeTriangles(tris)
+	return tris, nil
 }
 
 func analyzeASCIISTL(r io.Reader) (ModelAnalysis, error) {
+	tris, err := readASCIISTLTriangles(r)
+	if err != nil {
+		return ModelAnalysis{}, err
+	}
+	return analyzeTriangles(tris)
+}
+
+func readASCIISTLTriangles(r io.Reader) ([]triangle, error) {
 	s := bufio.NewScanner(r)
 	buf := make([]byte, 64*1024)
 	s.Buffer(buf, 4*1024*1024)
@@ -113,30 +162,30 @@ func analyzeASCIISTL(r io.Reader) (ModelAnalysis, error) {
 		}
 		parts := strings.Fields(line)
 		if len(parts) != 4 {
-			return ModelAnalysis{}, fmt.Errorf("riga vertex STL non valida")
+			return nil, fmt.Errorf("riga vertex STL non valida")
 		}
 		x, e1 := strconv.ParseFloat(parts[1], 64)
 		y, e2 := strconv.ParseFloat(parts[2], 64)
 		z, e3 := strconv.ParseFloat(parts[3], 64)
 		if e1 != nil || e2 != nil || e3 != nil {
-			return ModelAnalysis{}, fmt.Errorf("coordinate STL non valide")
+			return nil, fmt.Errorf("coordinate STL non valide")
 		}
 		verts = append(verts, vec3{x, y, z})
 		if len(verts)/3 > MaxTriangles {
-			return ModelAnalysis{}, fmt.Errorf("STL oltre %d triangoli", MaxTriangles)
+			return nil, fmt.Errorf("STL oltre %d triangoli", MaxTriangles)
 		}
 	}
 	if err := s.Err(); err != nil {
-		return ModelAnalysis{}, err
+		return nil, err
 	}
 	if len(verts) < 3 || len(verts)%3 != 0 {
-		return ModelAnalysis{}, fmt.Errorf("STL ASCII incompleto")
+		return nil, fmt.Errorf("STL ASCII incompleto")
 	}
 	tris := make([]triangle, 0, len(verts)/3)
 	for i := 0; i < len(verts); i += 3 {
 		tris = append(tris, triangle{verts[i], verts[i+1], verts[i+2]})
 	}
-	return analyzeTriangles(tris)
+	return tris, nil
 }
 
 type qv struct{ X, Y, Z int64 }
@@ -239,11 +288,35 @@ func analyzeTriangles(tris []triangle) (ModelAnalysis, error) {
 		}
 	}
 	contact := float64(minZVertices) / float64(len(tris)*3)
+	pieceCount, largest := measurePieces(tris, ext)
 	return ModelAnalysis{
 		TriangleCount: len(tris), BoundsMin: [3]float64{minv.X, minv.Y, minv.Z}, BoundsMax: [3]float64{maxv.X, maxv.Y, maxv.Z}, Extents: ext,
 		SurfaceArea: area, Volume: math.Abs(signedVol), Watertight: openEdges == 0 && nonManifold == 0 && degenerate == 0,
 		DegenerateFaces: degenerate, OverhangRatio: float64(downward) / float64(len(tris)), BedContactRatio: contact,
+		PieceCount: pieceCount, LargestPiece: largest,
 	}, nil
+}
+
+// measurePieces reports how many separate parts the file holds and how big the
+// biggest one is. That is the number that decides printability: the parts can
+// be spread over several plates, so the box around all of them proves nothing.
+func measurePieces(tris []triangle, overall [3]float64) (int, [3]float64) {
+	pieces := SplitIntoPieces(tris)
+	if len(pieces) == 0 {
+		return 1, overall
+	}
+	largest := [3]float64{}
+	for _, piece := range pieces {
+		// "Biggest" is the one hardest to fit, so compare by longest axis.
+		if maxAxis(piece.Extents) > maxAxis(largest) {
+			largest = piece.Extents
+		}
+	}
+	return len(pieces), largest
+}
+
+func maxAxis(e [3]float64) float64 {
+	return math.Max(e[0], math.Max(e[1], e[2]))
 }
 
 func classifyAnalysis(a *ModelAnalysis) {
@@ -267,10 +340,10 @@ func classifyAnalysis(a *ModelAnalysis) {
 		a.Category = "Oggetto tecnico/decorativo"
 	}
 	if !a.Watertight {
-		a.Warnings = append(a.Warnings, "Mesh non chiusa o non manifold: importazione automatica bloccata.")
+		a.Warnings = append(a.Warnings, "Mesh non chiusa o non manifold: lo slicer la richiuderà in fase di taglio, controlla il risultato.")
 	}
 	if a.DegenerateFaces > 0 {
-		a.Warnings = append(a.Warnings, fmt.Sprintf("Rilevate %d facce degeneri: il modello non viene modificato e l'importazione è bloccata.", a.DegenerateFaces))
+		a.Warnings = append(a.Warnings, fmt.Sprintf("Rilevate %d facce degeneri su %d: il modello non viene modificato, le corregge lo slicer.", a.DegenerateFaces, a.TriangleCount))
 	}
 	if x > 220 || y > 220 || z > 220 {
 		a.Warnings = append(a.Warnings, "Il modello supera il volume delle stampanti compatte: FlashFit verificherà il volume della macchina selezionata.")
@@ -283,17 +356,37 @@ func classifyAnalysis(a *ModelAnalysis) {
 	}
 }
 
+// MaxDefectRatio is the share of triangles that may be malformed before the
+// mesh is treated as unusable rather than merely imperfect.
+const MaxDefectRatio = 0.02
+
+// ValidateAnalysis separates a mesh that cannot be processed from one that will
+// simply print with imperfections.
+//
+// Refusing anything less than perfectly manifold made the app unusable in
+// practice: a downloaded model is almost never watertight, and one real file
+// was blocked over 4 malformed triangles out of 746,632 — two thousandths of a
+// percent. Every slicer repairs that class of defect on load, and FlashFit is
+// not the thing doing the slicing.
+//
+// So small defects are reported and carried through as warnings, while a mesh
+// that is broken in bulk, empty, or outside the size the engine can handle is
+// still refused.
 func ValidateAnalysis(a ModelAnalysis) error {
-	if !a.Watertight {
-		return errors.New("mesh non chiusa/non manifold: correggila prima di importare")
+	if a.TriangleCount > 0 {
+		if ratio := float64(a.DegenerateFaces) / float64(a.TriangleCount); ratio > MaxDefectRatio {
+			return fmt.Errorf("mesh con %d facce degeneri su %d (%.1f%%): troppo compromessa, ripara il modello prima di importare",
+				a.DegenerateFaces, a.TriangleCount, ratio*100)
+		}
 	}
-	if a.DegenerateFaces != 0 {
-		return errors.New("mesh con facce degeneri: FlashFit non la ripara automaticamente")
-	}
-	// Global parsing envelope: the exact build-volume check is performed against
-	// the selected printer immediately before recommendation/import.
-	if a.Extents[0] > 350 || a.Extents[1] > 330 || a.Extents[2] > 600 {
-		return errors.New("modello fuori dal volume massimo delle stampanti supportate (350×330×600 mm)")
+	// Coarse sanity envelope, judged on the largest single piece rather than the
+	// box around every piece in the file: a multi-part download can measure a
+	// metre across while each part fits a small plate. The exact build-volume
+	// check happens against the chosen printer just before import.
+	measured := printableExtents(a)
+	if measured[0] > 350 || measured[1] > 330 || measured[2] > 600 {
+		return fmt.Errorf("il pezzo più grande (%.0f×%.0f×%.0f mm) supera il volume massimo delle stampanti supportate (350×330×600 mm)",
+			measured[0], measured[1], measured[2])
 	}
 	if a.TriangleCount <= 0 || a.TriangleCount > MaxTriangles {
 		return errors.New("numero triangoli fuori limite")

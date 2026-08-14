@@ -51,6 +51,12 @@ type ModelAnalysis struct {
 	ThinOrTall       bool       `json:"thin_or_tall"`
 	SupportSuggested bool       `json:"support_suggested"`
 	BrimSuggested    bool       `json:"brim_suggested"`
+	// A file often holds several separate parts. Extents then measures the box
+	// around all of them, which says nothing about whether any of them can be
+	// printed: what matters is the largest single piece, since the rest can go
+	// on another plate.
+	PieceCount      int        `json:"piece_count"`
+	LargestPiece    [3]float64 `json:"largest_piece"`
 	Category         string     `json:"category"`
 	Warnings         []string   `json:"warnings"`
 	StoredModelPath  string     `json:"-"`

@@ -19,7 +19,15 @@ import (
 
 const (
 	modelAnalysisTimeout  = 2 * time.Minute
-	MaxSanitizedTriangles = 500_000
+	// The same mesh must be judged the same way whatever container it arrives
+	// in. This used to sit at half of MaxTriangles, so a 750k-triangle car was
+	// accepted as an STL and refused as a 3MF — the geometry being identical.
+	//
+	// The limit exists to bound memory, and the numbers support the higher one:
+	// a triangle is 72 bytes, so a million of them is ~72 MB of mesh plus the
+	// vertex-dedup index, and all of it is built inside the analysis worker
+	// process rather than the one drawing the window.
+	MaxSanitizedTriangles = MaxTriangles
 	max3MFModelXML        = 192 * 1024 * 1024
 )
 
@@ -741,7 +749,9 @@ func read3MFGeometry(filePath string, deadline analysisDeadline) ([]triangle, in
 				}
 				tris = append(tris, triangle{a, b, c})
 				if len(tris) > MaxSanitizedTriangles {
-					return fmt.Errorf("3MF oltre %d triangoli: riduci la mesh prima dell’importazione sicura", MaxSanitizedTriangles)
+					// Say how far over it is: "too many" alone gives the user no
+					// idea whether to decimate slightly or split the model.
+					return fmt.Errorf("3MF con oltre %d triangoli (limite %d): riduci o suddividi la mesh prima dell’importazione sicura", len(tris), MaxSanitizedTriangles)
 				}
 			}
 		}

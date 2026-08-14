@@ -8,6 +8,11 @@ package main
 type windowBackBuffer struct {
 	dc, bitmap, previous uintptr
 	width, height        int32
+	// fresh marks a buffer whose contents are undefined because it was just
+	// created. Partial repaints reuse whatever the buffer already holds, so
+	// drawing only part of a fresh one leaves the rest as uninitialised memory —
+	// which is how the canvas came up blank after a resize.
+	fresh bool
 }
 
 func (b *windowBackBuffer) ensure(hdc uintptr, width, height int32) bool {
@@ -18,6 +23,7 @@ func (b *windowBackBuffer) ensure(hdc uintptr, width, height int32) bool {
 		return true
 	}
 	b.reset()
+	defer func() { b.fresh = true }()
 	dc, _, _ := pCreateCompatibleDC.Call(hdc)
 	if dc == 0 {
 		return false
