@@ -43,13 +43,18 @@ func ValidateFilament(f Filament) error {
 		return fmt.Errorf("filamento senza marca/prodotto/materiale")
 	}
 	m := strings.ToUpper(f.Material)
-	if !strings.HasPrefix(m, "PLA") && !strings.HasPrefix(m, "PETG") {
-		return fmt.Errorf("materiale non abilitato nella versione verde: %s", f.Material)
+	// The catalogue always described twenty material families; this gate let
+	// through two of them, so ABS, ASA, TPU, PA, PC and the soluble supports
+	// were shipped in the file and then discarded on load. It now admits every
+	// family the engine has real tuning for, and only those.
+	if !SupportedMaterial(m) {
+		return fmt.Errorf("materiale non supportato dal motore: %s", f.Material)
 	}
-	for _, t := range []string{"CF", "CARBON", "GF", "GLASS", "WOOD", "METAL", "GLOW"} {
-		if strings.Contains(m, " "+t) || strings.Contains(m, "-"+t) || strings.Contains(strings.ToUpper(f.Product+" "+f.Variant), t) {
-			return fmt.Errorf("filamento abrasivo non abilitato con ugello standard")
-		}
+	// Abrasive fills are still refused, but that is a property of the nozzle,
+	// not of the material: they chew through brass. The check stays until the
+	// selected printer's nozzle is known to be hardened.
+	if IsAbrasive(f) {
+		return fmt.Errorf("filamento abrasivo non abilitato con ugello standard")
 	}
 	if f.NozzleMin < 160 || f.NozzleMax > 280 || f.NozzleDefault < f.NozzleMin || f.NozzleDefault > f.NozzleMax {
 		return fmt.Errorf("temperature ugello non valide")

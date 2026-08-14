@@ -153,7 +153,11 @@ func DiscoverProfiles() DiscoveredProfiles {
 				}
 			case "filament":
 				mat := strings.ToUpper(mapText(m, "filament_type"))
-				if strings.HasPrefix(mat, "PLA") || strings.HasPrefix(mat, "PETG") {
+				// Every family the engine can tune for, not just PLA and PETG.
+				// The catalogue always covered ABS, ASA, TPU, PA, PC and the
+				// soluble supports; this filter was quietly discarding the
+				// slicer's own profiles for all of them.
+				if SupportedMaterial(mat) {
 					if !seenF[path] {
 						seenF[path] = true
 						d.Filaments = append(d.Filaments, path)
@@ -521,12 +525,11 @@ func validateBaseFilament(path, material string) (map[string]any, error) {
 		return nil, errors.New("file base non è un profilo filamento")
 	}
 	mat := strings.ToUpper(mapText(m, "filament_type"))
-	want := strings.ToUpper(material)
-	if strings.HasPrefix(want, "PLA") && !strings.HasPrefix(mat, "PLA") {
-		return nil, fmt.Errorf("profilo base %s non PLA", mat)
-	}
-	if strings.HasPrefix(want, "PETG") && !strings.HasPrefix(mat, "PETG") {
-		return nil, fmt.Errorf("profilo base %s non PETG", mat)
+	// A base profile has to belong to the same family, not carry the identical
+	// name: vendors ship one base per family, so an ABS profile is the right
+	// starting point for ASA and a PLA one for PLA-CF.
+	if !SameFamily(material, mat) {
+		return nil, fmt.Errorf("profilo base %s non appartiene alla famiglia %s", mat, FamilyOf(material))
 	}
 	return m, nil
 }

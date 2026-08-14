@@ -70,7 +70,8 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		return Recommendation{}, errors.New("qualità sconosciuta")
 	}
 	m := strings.ToUpper(strings.TrimSpace(f.Material))
-	isPETG := strings.HasPrefix(m, "PETG")
+	behaviour := BehaviourOf(m)
+	isPETG := FamilyOf(m) == FamilyPETG
 	isSilk := strings.Contains(strings.ToUpper(f.Product+" "+f.Variant), "SILK")
 	estimatedBalancedMinutes := EstimateBalancedMinutes(a, f)
 	durationClass := durationClassForMinutes(estimatedBalancedMinutes)
@@ -92,6 +93,12 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 	linearLimit := math.Min(300, printer.MaxTravelSpeed)
 	if f.RecommendedSpeedMax > 0 {
 		linearLimit = math.Min(linearLimit, f.RecommendedSpeedMax)
+	}
+	// Some families are limited by something other than how fast they melt: a
+	// flexible buckles in the extruder, an engineering material warps if it is
+	// laid faster than it can bond to the layer below.
+	if behaviour.SpeedCeiling > 0 {
+		linearLimit = math.Min(linearLimit, behaviour.SpeedCeiling)
 	}
 	if isSilk {
 		// Both Flashforge and Bambu document loss of gloss at high speed.
@@ -126,6 +133,11 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		bridge = math.Min(bridge, 21)
 		small = math.Min(small, 24)
 		p.OuterAccel = math.Min(p.OuterAccel, 1350)
+	}
+	if behaviour.BridgeCeiling > 0 {
+		// A bridge has to set before the next one lands on it, and how long
+		// that takes is a property of the material.
+		bridge = math.Min(bridge, behaviour.BridgeCeiling)
 	}
 
 	if f.NozzleDefault > printer.MaxNozzleTemperature {
@@ -186,7 +198,7 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		"internal_solid_infill_acceleration": fmt0(p.TopAccel), "top_surface_acceleration": fmt0(p.TopAccel), "bridge_acceleration": fmt0(p.OuterAccel), "initial_layer_acceleration": "500",
 		"travel_acceleration": fmt0(math.Min(5000, printer.MaxAcceleration*0.45)), "travel_speed": fmt0(math.Min(350, printer.MaxTravelSpeed*0.75)), "bridge_flow": fmt2(bridgeFlow),
 		"avoid_crossing_wall": "1", "reduce_infill_retraction": "0", "overhang_1_4_speed": "0", "overhang_2_4_speed": fmt0(math.Min(outer, 42)), "overhang_3_4_speed": fmt0(math.Min(bridge+8, 34)), "overhang_4_4_speed": fmt0(math.Min(bridge, 24)),
-		"enable_support": bool01(a.SupportSuggested), "support_type": supportType(a), "support_threshold_angle": "45", "brim_type": brimType(a), "brim_width": brimWidth(a),
+		"enable_support": bool01(a.SupportSuggested), "support_type": supportType(a), "support_threshold_angle": "45", "brim_type": brimTypeFor(a, behaviour), "brim_width": brimWidthFor(a, behaviour),
 		// Supports that will not come off ruin the surface they were protecting,
 		// which matters most on the tier chosen for looks. These leave a
 		// deliberate gap under and around them and space the interface out, so
@@ -252,7 +264,11 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		"nozzle_temperature": fmt0(nozzle), "nozzle_temperature_initial_layer": fmt0(math.Min(printer.MaxNozzleTemperature, math.Min(f.NozzleMax, nozzle+5))),
 		"hot_plate_temp": fmt0(bed), "hot_plate_temp_initial_layer": fmt0(math.Min(printer.MaxBedTemperature, math.Min(f.BedMax, bed+5))),
 		"textured_plate_temp": fmt0(bed), "textured_plate_temp_initial_layer": fmt0(math.Min(printer.MaxBedTemperature, math.Min(f.BedMax, bed+5))),
-		"fan_min_speed": fmt0(f.FanMin), "fan_max_speed": fmt0(f.FanMax),
+		// Cooling is capped by family. ABS, ASA, PA and PC warp and delaminate
+		// when cooled hard, and a spool's own fan range does not know that; PLA
+		// takes all the air it can get.
+		"fan_min_speed": fmt0(math.Min(f.FanMin, float64(behaviour.MaxFanPercent))),
+		"fan_max_speed": fmt0(math.Min(f.FanMax, float64(behaviour.MaxFanPercent))),
 		"close_fan_the_first_x_layers": fmt.Sprintf("%d", closedFanLayers), "full_fan_speed_layer": fmt.Sprintf("%d", fullFanLayer),
 		"slow_down_for_layer_cooling": "1", "slow_down_layer_time": fmt.Sprintf("%d", slowLayerTime), "min_print_speed": fmt.Sprintf("%d", minPrintSpeed),
 	}
@@ -788,6 +804,29 @@ func brimType(a ModelAnalysis) string {
 }
 func brimWidth(a ModelAnalysis) string {
 	if a.BrimSuggested {
+		return "5"
+	}
+	return "0"
+}
+
+// Adhesion is decided by the part and by the material together. A tall narrow
+// PLA part needs a brim because of its footprint; an ABS part needs one because
+// it contracts as it cools and peels itself off the plate, whatever its shape.
+func brimTypeFor(a ModelAnalysis, b MaterialBehaviour) string {
+	if a.BrimSuggested || b.NeedsBrim {
+		return "outer_only"
+	}
+	return "no_brim"
+}
+
+func brimWidthFor(a ModelAnalysis, b MaterialBehaviour) string {
+	switch {
+	case b.NeedsBrim && a.BrimSuggested:
+		// Both reasons at once: a warping material on an unstable footprint.
+		return "8"
+	case b.NeedsBrim:
+		return "6"
+	case a.BrimSuggested:
 		return "5"
 	}
 	return "0"
