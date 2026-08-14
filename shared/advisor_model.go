@@ -86,6 +86,11 @@ type advisorDeltas struct {
 	// setting by itself — it decides how much clearance S.O.G keeps below each
 	// safety limit, and can only ever ask for more. See sogMargin.
 	Finish string `json:"finish"`
+	// Risks are the named problems the model expects this particular part to
+	// have — the ones the arithmetic cannot see, because they follow from what
+	// the shape is for rather than from any number in the profile. S.O.G has a
+	// bounded, one-way correction for each; a word it does not know is dropped.
+	Risks []string `json:"risks"`
 
 	// Filled in from Class by deltasForClass, never parsed from the reply.
 	Walls      int
@@ -170,6 +175,9 @@ type AdvisorOutcome struct {
 	// Finish is the recognised surface sensitivity, which S.O.G reads to decide
 	// how much clearance to keep below each safety limit.
 	Finish string
+	// Risks are the named problems the model flagged, already filtered by the
+	// guard to the ones S.O.G has a correction for.
+	Risks []string
 }
 
 // LastAdvisorOutcome is written by the recommendation path and read by the UI.
@@ -221,7 +229,7 @@ type advisorChatResponse struct {
 const advisorSystemPrompt = `You identify what a 3D printed part is.
 
 Reply with ONLY a JSON object. No prose, no markdown:
-{"object":string,"class":string,"finish":string,"reason":string}
+{"object":string,"class":string,"finish":string,"risks":[string],"reason":string}
 
 "object": what the part is, in one or two words ("vase", "phone stand", "gear").
 The file name is the strongest evidence - trust a name that clearly states what the part is,
@@ -245,13 +253,20 @@ with solidity 0.62 is not hollow.
   hidden      - it ends up inside or underneath something.
   unknown     - not enough evidence.
 
+"risks": a list, possibly empty, of problems THIS part is likely to have because of
+what it is. Only these words, nothing else. Leave it empty when none clearly apply:
+  warping       - a wide flat footprint that will lift at the corners as it cools.
+  overhang_scar - unsupported curves or eaves that will come out rough underneath.
+  layer_shift   - tall and top-heavy, liable to be knocked out of alignment.
+  stringing     - many separate towers or thin spikes, with long hops between them.
+
 "reason": one short sentence naming the evidence you used.
 
 Examples, note how different they are:
-{"object":"vase","class":"hollow","finish":"showpiece","reason":"solidity 0.09 is a shell around air"}
-{"object":"motor bracket","class":"mechanical","finish":"functional","reason":"solid part named as a bracket, takes load"}
-{"object":"porsche 911","class":"decorative","finish":"showpiece","reason":"named as a car model, made to be looked at"}
-{"object":"unknown","class":"unknown","finish":"unknown","reason":"name says nothing and the shape is unremarkable"}`
+{"object":"vase","class":"hollow","finish":"showpiece","risks":[],"reason":"solidity 0.09 is a shell around air"}
+{"object":"motor bracket","class":"mechanical","finish":"functional","risks":["warping"],"reason":"solid part named as a bracket, takes load"}
+{"object":"porsche 911","class":"decorative","finish":"showpiece","risks":["overhang_scar"],"reason":"named as a car model, made to be looked at"}
+{"object":"unknown","class":"unknown","finish":"unknown","risks":[],"reason":"name says nothing and the shape is unremarkable"}`
 
 // AdvisorPriority is the user's stated preference, passed straight to the model
 // so its choices follow the same intent the interface shows.

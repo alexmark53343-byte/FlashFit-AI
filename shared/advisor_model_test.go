@@ -107,7 +107,7 @@ func TestClassesProduceDifferentSettings(t *testing.T) {
 	if mechanical.Infill <= 0 {
 		t.Fatalf("un pezzo meccanico deve guadagnare infill: %d", mechanical.Infill)
 	}
-	if unknown != (advisorDeltas{SpeedScale: 1}) {
+	if unknown.hasEffect() {
 		t.Fatalf("una classe sconosciuta non deve cambiare nulla: %+v", unknown)
 	}
 }

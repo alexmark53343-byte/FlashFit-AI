@@ -45,8 +45,8 @@ import (
 // SOGRepair is one correction, kept so the interface can say what was changed
 // rather than silently handing back a different profile.
 type SOGRepair struct {
-	Issue   string  // the defect key it was answering
-	Setting string  // the setting it moved
+	Issue   string // the defect key it was answering
+	Setting string // the setting it moved
 	From    float64
 	To      float64
 }
@@ -65,6 +65,9 @@ type SOGVerdict struct {
 	// from the model or from the rules.
 	Finish string
 	Source string
+	// Risks are the named problems the model flagged for this part, after the
+	// guard reduced them to the words S.O.G can act on.
+	Risks []string
 	// SpeedFactor is how much slower the repaired profile is, for scaling the
 	// time estimate. 1 means nothing that affects the estimate moved.
 	SpeedFactor float64
@@ -131,6 +134,12 @@ func SecureProfile(rec *Recommendation, a ModelAnalysis, f Filament, printer Pri
 	margin := sogMargin(verdict.Finish)
 
 	outerBefore := processFloat(rec, "outer_wall_speed")
+
+	// The risks the model named for this particular part, handled first so that
+	// whatever they change is then walked through the numeric checks below
+	// rather than applied after them and never looked at again.
+	verdict.Risks = LastAdvisorOutcome.Risks
+	verdict.Repairs = append(verdict.Repairs, applyNamedRisks(rec, verdict.Risks, margin)...)
 
 	const maxPasses = 8
 	for pass := 1; pass <= maxPasses; pass++ {
@@ -309,4 +318,84 @@ func (v SOGVerdict) Summary() string {
 	default:
 		return fmt.Sprintf("%d correzioni applicate", len(v.Repairs))
 	}
+}
+
+// What the model contributes to S.O.G beyond a margin: named risks.
+//
+// The numeric checks reason about rates and limits, and there is a whole class
+// of defect they cannot see because it follows from what the part is for rather
+// than from any number in the profile. A wide flat bracket lifts at the corners
+// as it cools; a car body scars underneath its eaves; a tall thin tower gets
+// knocked out of line. Nothing in the arithmetic distinguishes those from a
+// part of identical dimensions that does none of it.
+//
+// That is a recognition problem, which is the half the model is good at. So it
+// names risks from a fixed list and S.O.G decides what each one is worth — the
+// same division of labour as the class, and with the same bound: every
+// correction below is one-way, so a risk named in error costs time and nothing
+// else. A word S.O.G does not recognise is dropped by the guard before it gets
+// here, which is why this switch has no default case to worry about.
+var sogRiskOrder = []string{"warping", "overhang_scar", "layer_shift", "stringing"}
+
+var sogKnownRisks = func() map[string]bool {
+	known := make(map[string]bool, len(sogRiskOrder))
+	for _, risk := range sogRiskOrder {
+		known[risk] = true
+	}
+	return known
+}()
+
+// applyNamedRisks makes the corrections for the risks the model named. It runs
+// before the repair loop, so anything it changes is checked by it rather than
+// after it.
+func applyNamedRisks(rec *Recommendation, risks []string, margin float64) []SOGRepair {
+	var done []SOGRepair
+	for _, risk := range risks {
+		switch risk {
+		case "warping":
+			// A brim is the standard answer and costs a few grams. Widening one
+			// that is already there is not, so it is only added when absent.
+			if fmt.Sprint(rec.Process["brim_type"]) == "no_brim" {
+				rec.Process["brim_type"] = "outer_only"
+				rec.Process["brim_width"] = "5"
+				done = append(done, SOGRepair{Issue: risk, Setting: "brim_type", To: 5})
+			}
+			if repair, ok := lowerProcess(rec, "initial_layer_speed", processFloat(rec, "initial_layer_speed")*0.85, 0); ok {
+				repair.Issue = risk
+				done = append(done, repair)
+			}
+
+		case "overhang_scar":
+			// The bands below vertical are laid into air. Slower is the only
+			// lever here that does not depend on the machine's fan curve.
+			for _, key := range []string{"overhang_2_4_speed", "overhang_3_4_speed", "overhang_4_4_speed"} {
+				if repair, ok := lowerProcess(rec, key, processFloat(rec, key)*margin*0.85, 0); ok {
+					repair.Issue = risk
+					done = append(done, repair)
+				}
+			}
+
+		case "layer_shift":
+			// A shift is the frame losing a step against the mass it is
+			// throwing around, so what comes off is acceleration.
+			for _, key := range []string{"outer_wall_acceleration", "inner_wall_acceleration", "sparse_infill_acceleration"} {
+				if repair, ok := lowerProcess(rec, key, processFloat(rec, key)*0.75, 0); ok {
+					repair.Issue = risk
+					done = append(done, repair)
+				}
+			}
+
+		case "stringing":
+			// The real cure is retraction, and retraction stays exactly as the
+			// vendor profile calibrated it — FlashFit does not own that number
+			// and guessing at it would undo a machine's own calibration. What
+			// is safely ours is the speed of the hops between towers, where a
+			// slower travel drags less molten material across the gap.
+			if repair, ok := lowerProcess(rec, "travel_speed", processFloat(rec, "travel_speed")*0.85, 0); ok {
+				repair.Issue = risk
+				done = append(done, repair)
+			}
+		}
+	}
+	return done
 }

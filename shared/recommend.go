@@ -220,12 +220,12 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		// which matters most on the tier chosen for looks. These leave a
 		// deliberate gap under and around them and space the interface out, so
 		// they peel rather than weld.
-		"support_top_z_distance":     supportTopGap(quality, p.Layer),
-		"support_bottom_z_distance":  supportTopGap(quality, p.Layer),
-		"support_object_xy_distance": supportSideGap(quality),
-		"support_interface_spacing":  supportInterfaceSpacing(quality),
+		"support_top_z_distance":         supportTopGap(quality, p.Layer),
+		"support_bottom_z_distance":      supportTopGap(quality, p.Layer),
+		"support_object_xy_distance":     supportSideGap(quality),
+		"support_interface_spacing":      supportInterfaceSpacing(quality),
 		"support_interface_loop_pattern": "0",
-		"ironing_type": "no ironing", "ironing_pattern": "rectilinear", "ironing_flow": "10%", "ironing_spacing": "0.1", "ironing_inset": "0.12", "ironing_speed": "24",
+		"ironing_type":                   "no ironing", "ironing_pattern": "rectilinear", "ironing_flow": "10%", "ironing_spacing": "0.1", "ironing_inset": "0.12", "ironing_speed": "24",
 		"fuzzy_skin": "none", "fuzzy_skin_thickness": "0", "fuzzy_skin_point_distance": "0.3", "fuzzy_skin_first_layer": "0",
 	}
 
@@ -284,8 +284,8 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 		// Cooling is capped by family. ABS, ASA, PA and PC warp and delaminate
 		// when cooled hard, and a spool's own fan range does not know that; PLA
 		// takes all the air it can get.
-		"fan_min_speed": fmt0(math.Min(f.FanMin, float64(behaviour.MaxFanPercent))),
-		"fan_max_speed": fmt0(math.Min(f.FanMax, float64(behaviour.MaxFanPercent))),
+		"fan_min_speed":                fmt0(math.Min(f.FanMin, float64(behaviour.MaxFanPercent))),
+		"fan_max_speed":                fmt0(math.Min(f.FanMax, float64(behaviour.MaxFanPercent))),
 		"close_fan_the_first_x_layers": fmt.Sprintf("%d", closedFanLayers), "full_fan_speed_layer": fmt.Sprintf("%d", fullFanLayer),
 		"slow_down_for_layer_cooling": "1", "slow_down_layer_time": fmt.Sprintf("%d", slowLayerTime), "min_print_speed": fmt.Sprintf("%d", minPrintSpeed),
 	}

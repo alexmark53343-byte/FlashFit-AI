@@ -164,3 +164,69 @@ func TestSOGKeepsTheSelfTestInStep(t *testing.T) {
 		t.Fatalf("il self-test controllerebbe %.0f mentre il profilo porta %.0f", got, written)
 	}
 }
+
+// The model names risks the arithmetic cannot see, because they follow from
+// what the part is for rather than from any number in the profile. S.O.G still
+// owns every number: a named risk buys a bounded, one-way correction and
+// nothing else.
+func TestNamedRisksOnlyEverTightenTheProfile(t *testing.T) {
+	watched := []string{
+		"outer_wall_acceleration", "inner_wall_acceleration", "sparse_infill_acceleration",
+		"overhang_2_4_speed", "overhang_3_4_speed", "overhang_4_4_speed",
+		"travel_speed", "initial_layer_speed",
+	}
+	for _, risk := range sogRiskOrder {
+		rec, a, f, printer := sogFixture(t)
+		before := map[string]float64{}
+		for _, key := range watched {
+			before[key] = processFloat(&rec, key)
+		}
+
+		LastAdvisorOutcome = AdvisorOutcome{Used: true, Risks: []string{risk}}
+		verdict := SecureProfile(&rec, a, f, printer)
+
+		for _, key := range watched {
+			if after := processFloat(&rec, key); after > before[key] {
+				t.Fatalf("rischio %q: %s è salito da %.0f a %.0f", risk, key, before[key], after)
+			}
+		}
+		if len(verdict.Risks) != 1 || verdict.Risks[0] != risk {
+			t.Fatalf("rischio %q non riportato nel verdetto: %v", risk, verdict.Risks)
+		}
+	}
+	LastAdvisorOutcome = AdvisorOutcome{}
+}
+
+// Each named risk has to actually do something, or naming it is theatre.
+func TestEachNamedRiskChangesTheProfile(t *testing.T) {
+	for _, risk := range sogRiskOrder {
+		rec, _, _, _ := sogFixture(t)
+		// A brim already present means the warping fix has only its second half
+		// to apply, which is the case worth checking.
+		rec.Process["brim_type"] = "no_brim"
+		repairs := applyNamedRisks(&rec, []string{risk}, 1.0)
+		if len(repairs) == 0 {
+			t.Fatalf("il rischio %q non produce alcuna correzione", risk)
+		}
+	}
+}
+
+// A reply listing every risk in the vocabulary is not a diagnosis of this part,
+// and words S.O.G has no correction for buy nothing by being kept.
+func TestRiskListIsFilteredByTheGuard(t *testing.T) {
+	if got := keepKnownRisks([]string{"warping", "spaghetti", "WARPING", " layer_shift "}); len(got) != 2 {
+		t.Fatalf("filtro rischi errato: %v", got)
+	}
+	if got := keepKnownRisks(sogRiskOrder); got != nil {
+		t.Fatalf("l'elenco completo del vocabolario non è una diagnosi: %v", got)
+	}
+	if got := keepKnownRisks([]string{"qualcosa", "altro"}); got != nil {
+		t.Fatalf("parole sconosciute accettate: %v", got)
+	}
+	// Order is fixed, so the same reply always produces the same repairs.
+	first := keepKnownRisks([]string{"layer_shift", "warping"})
+	second := keepKnownRisks([]string{"warping", "layer_shift"})
+	if len(first) != 2 || first[0] != second[0] || first[1] != second[1] {
+		t.Fatalf("l'ordine dipende da come ha risposto il modello: %v contro %v", first, second)
+	}
+}

@@ -213,6 +213,13 @@ func vetReply(d advisorDeltas, a ModelAnalysis) (advisorDeltas, string, bool) {
 		d.Finish = "unknown"
 	}
 
+	// Named risks are filtered rather than rejected, for the same reason: each
+	// one S.O.G recognises has a bounded correction, and one it does not
+	// recognise has none, so dropping it costs exactly nothing. The count is
+	// capped because a model that answers with the whole vocabulary is not
+	// telling us anything about this part.
+	d.Risks = keepKnownRisks(d.Risks)
+
 	mismatch := classContradiction(class, shapeFactsOf(a))
 	if mismatch != "" {
 		// The name is usually right even when the class is not — the model read
@@ -221,6 +228,32 @@ func vetReply(d advisorDeltas, a ModelAnalysis) (advisorDeltas, string, bool) {
 		d.Class = "unknown"
 	}
 	return d, mismatch, true
+}
+
+// keepKnownRisks reduces the model's list to the words S.O.G can act on, once
+// each and in a fixed order, so the same reply always produces the same repairs.
+func keepKnownRisks(reported []string) []string {
+	if len(reported) == 0 {
+		return nil
+	}
+	named := map[string]bool{}
+	for _, risk := range reported {
+		word := strings.ToLower(strings.TrimSpace(risk))
+		if sogKnownRisks[word] {
+			named[word] = true
+		}
+	}
+	if len(named) == 0 || len(named) >= len(sogKnownRisks) {
+		// Everything at once is not a diagnosis.
+		return nil
+	}
+	out := make([]string, 0, len(named))
+	for _, word := range sogRiskOrder {
+		if named[word] {
+			out = append(out, word)
+		}
+	}
+	return out
 }
 
 // hasEffect reports whether the advice actually asks for anything.
