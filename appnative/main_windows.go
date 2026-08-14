@@ -47,7 +47,8 @@ const (
 	WM_IMPORT_DONE    = WM_APP + 3
 	WM_SHOW_TEXTURES  = WM_APP + 4
 	WM_PREVIEW_DONE   = WM_APP + 5
-	WM_ADVISOR_READY  = WM_APP + 6
+	WM_ADVISOR_READY    = WM_APP + 6
+	WM_ADVISOR_PROGRESS = WM_APP + 7
 
 	WS_OVERLAPPEDWINDOW = 0x00CF0000
 	WS_VISIBLE          = 0x10000000
@@ -668,6 +669,10 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		return 0
 	case WM_SHOW_TEXTURES:
 		setQuality("perfect")
+		return 0
+	case WM_ADVISOR_PROGRESS:
+		// Only the toolbar changed, so the canvas keeps what it has.
+		invalidateChrome()
 		return 0
 	case WM_ADVISOR_READY:
 		// Whatever the outcome, the inspector now has something new to say.

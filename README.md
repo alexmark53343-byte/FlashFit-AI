@@ -79,22 +79,35 @@ to the deterministic path — there is a test that asserts exactly that.
 
 ## The local AI
 
-A light model is built into the application and works out of the box, offline.
-There is nothing to install and nothing to configure.
+The application is 7 MB. Nothing is embedded: a gigabyte inside the executable
+is a gigabyte in every clone of this repository and every download by someone
+who only wanted the app.
 
-Two buttons in the toolbar switch between the **light** model and a **stronger**
-one, if you have placed heavier weights in the models folder. A status chip
-shows what the model is doing: loading, online, working, or unavailable — and
-only the "working" state animates, so a still dot always means idle.
+Two buttons in the toolbar choose between a **light** model and a **stronger**
+one. A model not yet on disk is marked with an arrow, and choosing it downloads
+it — the engine first, then the weights, with a real percentage and transfer
+size, resumable if it is interrupted. Weights already present are found by size,
+so anything fetched by hand or by an earlier version is reused rather than
+downloaded again.
 
-The choice does not affect print quality. The settings are computed in code
-either way; a stronger model simply recognises more unusual parts. That is what
-makes the light model a real option on a machine with little memory rather than
-a downgrade.
+| | Model | Size | Memory |
+|---|---|---|---|
+| Light | Qwen2.5 1.5B Q4 | ~1.0 GB | runs anywhere |
+| Strong | Qwen2.5 3B Q4 | ~2.0 GB | wants a roomier machine |
 
-The model server runs as a child process inside a Windows job object with
-kill-on-close, so it can never be left behind — not by a crash, not by a forced
-quit.
+A status chip reports what the model is doing — downloading, loading with the
+percentage the server itself reports, online, working, or unavailable. Only the
+"working" state animates, so a still dot always means idle.
+
+**The choice does not affect print quality.** The settings are computed in code
+either way; a stronger model recognises more unusual parts, nothing more. That
+is what makes the light one a real option on a machine with little memory rather
+than a downgrade. If the chosen weights would not fit in free memory, the app
+falls back rather than swapping the machine to a standstill.
+
+Everything runs offline on CPU, in a child process inside a Windows job object
+with kill-on-close, so the server can never be left behind — not by a crash, not
+by a forced quit.
 
 ---
 
@@ -144,13 +157,12 @@ actually selected.
 ## Building
 
 ```
-go build -tags embedmodel -trimpath -ldflags="-s -w -H=windowsgui" -o "FlashFit AI.exe" ./appnative
+go build -trimpath -ldflags="-s -w -H=windowsgui" -o "FlashFit AI.exe" ./appnative
 ```
 
-The `embedmodel` tag embeds the language model, which the release build needs
-and which makes the binary about a gigabyte. Without the tag the build is a few
-megabytes and looks for weights in the models folder instead — that is the build
-to use while developing.
+That is the whole build: about 7 MB, no assets to fetch first. The model and the
+llama.cpp engine are downloaded by the application when a model is first chosen,
+into `%APPDATA%\FlashFitAI\models`.
 
 Run the end-to-end self-check with:
 

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -108,21 +110,18 @@ type advisorModelChoice struct {
 // Empty means the built-in light model.
 var advisorSelectedModel string
 
-// advisorAvailableModels lists what can be loaded: the light model that ships
-// with the app, plus any other weights the user has dropped in the models
-// folder.
+// advisorAvailableModels lists the weights present on disk.
 //
-// Keeping the small one built in is the point of the whole arrangement. A
-// heavier model is better at recognising unusual parts, but it needs several
-// gigabytes of memory — more than a base 8 GB machine can spare. The light one
-// always works, and the print quality does not depend on which is loaded
-// because the settings are computed here either way; the model only says what
-// the object is.
+// Nothing ships inside the application any more: a gigabyte in the executable
+// is a gigabyte in every clone of the repository and every download by someone
+// who only wanted the app. Models are fetched on first use instead.
+//
+// The choice does not affect print quality. A heavier model recognises more
+// unusual parts, but the settings are computed here either way — the model only
+// says what the object is — which is what makes the light one a real option on
+// a machine with little memory rather than a downgrade.
 func advisorAvailableModels() []advisorModelChoice {
 	choices := []advisorModelChoice{}
-	if advisorHasEmbeddedModel() {
-		choices = append(choices, advisorModelChoice{Label: tr("aiModelLight"), Embedded: true})
-	}
 	dir := advisorModelsDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -133,10 +132,6 @@ func advisorAvailableModels() []advisorModelChoice {
 			continue
 		}
 		full := filepath.Join(dir, entry.Name())
-		// The extracted copy of the built-in model is already offered above.
-		if advisorHasEmbeddedModel() && strings.EqualFold(entry.Name(), "model.gguf") {
-			continue
-		}
 		size := int64(0)
 		if info, statErr := entry.Info(); statErr == nil {
 			size = info.Size() / (1024 * 1024)
@@ -200,6 +195,23 @@ func heaviestAvailableModel() (advisorModelChoice, bool) {
 	return best, found
 }
 
+// chooseAdvisorModel switches to a catalogue model, fetching it first if it is
+// not on disk. A download already running is cancelled rather than queued: the
+// user changing their mind should not mean waiting for both.
+func chooseAdvisorModel(id string) {
+	entry, ok := advisorCatalogEntryByID(id)
+	if !ok {
+		return
+	}
+	if state := advisorDownloadStatus(); state.Active {
+		if state.Label == entry.Label {
+			return // already fetching this one
+		}
+		cancelAdvisorDownload()
+	}
+	startAdvisorDownload(entry)
+}
+
 // selectAdvisorModel switches to a different set of weights, restarting the
 // server so the change takes effect immediately.
 func selectAdvisorModel(path string) {
@@ -242,6 +254,15 @@ func findAdvisorAssets() (server string, model string, err error) {
 			case (name == "llama-server.exe" || name == "server.exe") && server == "":
 				server = full
 			}
+		}
+	}
+	// The downloader unpacks the engine into a runtime subfolder, which the
+	// scan above never looked into: it only read the top level, so a runtime
+	// that had just been fetched successfully was reported as missing.
+	if server == "" {
+		unpacked := filepath.Join(dir, "runtime", "llama-server.exe")
+		if fileExists(unpacked) {
+			server = unpacked
 		}
 	}
 	if server == "" {
@@ -330,9 +351,7 @@ func (r *advisorRuntime) start() {
 	go func() {
 		// With an embedded payload this unpacks it on first run; without one it
 		// falls back to whatever the user has placed in the models directory.
-		server, model, err := ensureEmbeddedAssets(func(stage string) {
-			writeLog("advisor: preparo " + stage + " al primo avvio…")
-		})
+		server, model, err := findAdvisorAssets()
 		if err != nil {
 			r.fail(err)
 			return
@@ -367,7 +386,14 @@ func (r *advisorRuntime) start() {
 		)
 		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
+		// The server reports its own loading progress on stderr. Reading it is
+		// the only honest source for a percentage here: anything else would be
+		// a guess dressed up as a measurement.
+		if pipe, pipeErr := cmd.StderrPipe(); pipeErr == nil {
+			go trackAdvisorLoadProgress(pipe)
+		} else {
+			cmd.Stderr = io.Discard
+		}
 		if err := cmd.Start(); err != nil {
 			if job != 0 {
 				pCloseHandle.Call(job)
@@ -421,6 +447,76 @@ func advisorThreadCount() int {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// advisorLoadPercent is how far the model is through loading, or -1 when the
+// server has not said. It is written by the reader below and read by the
+// interface.
+var (
+	advisorLoadMu      sync.Mutex
+	advisorLoadPercent = -1.0
+)
+
+func advisorLoadingProgress() float64 {
+	advisorLoadMu.Lock()
+	defer advisorLoadMu.Unlock()
+	return advisorLoadPercent
+}
+
+func setAdvisorLoadProgress(percent float64) {
+	advisorLoadMu.Lock()
+	advisorLoadPercent = percent
+	advisorLoadMu.Unlock()
+	if mainHwnd != 0 {
+		pPostMessage.Call(mainHwnd, WM_ADVISOR_PROGRESS, 0, 0)
+	}
+}
+
+// trackAdvisorLoadProgress watches the server's own output for how far it has
+// got. llama.cpp prints a percentage while it maps the weights; the exact
+// wording varies between builds, so a percentage is taken from any line that
+// mentions loading rather than from one fixed format.
+func trackAdvisorLoadProgress(pipe io.ReadCloser) {
+	defer pipe.Close()
+	setAdvisorLoadProgress(0)
+	scanner := bufio.NewScanner(pipe)
+	scanner.Buffer(make([]byte, 0, 8192), 1<<16)
+	for scanner.Scan() {
+		line := strings.ToLower(scanner.Text())
+		if !strings.Contains(line, "load") && !strings.Contains(line, "%") {
+			continue
+		}
+		if percent, ok := percentInLine(line); ok {
+			setAdvisorLoadProgress(percent)
+		}
+	}
+	// Loading is over, one way or the other.
+	setAdvisorLoadProgress(-1)
+}
+
+// percentInLine pulls the last percentage out of a log line.
+func percentInLine(line string) (float64, bool) {
+	index := strings.LastIndex(line, "%")
+	if index <= 0 {
+		return 0, false
+	}
+	start := index
+	for start > 0 {
+		c := line[start-1]
+		if (c >= '0' && c <= '9') || c == '.' {
+			start--
+			continue
+		}
+		break
+	}
+	if start == index {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(line[start:index]), 64)
+	if err != nil || value < 0 || value > 100 {
+		return 0, false
+	}
+	return value, true
 }
 
 func (r *advisorRuntime) fail(err error) {

@@ -677,6 +677,11 @@ func drawAIStatus(hdc uintptr) {
 		dot, label = th.okColor, tr("aiOnline")
 	case starting:
 		dot, label = th.warnColor, tr("aiLoading")
+		// The server reports how far it has mapped the weights; show it when
+		// it does, rather than a spinner that says nothing.
+		if percent := advisorLoadingProgress(); percent >= 0 {
+			label = fmt.Sprintf("%s %.0f%%", tr("aiLoading"), percent)
+		}
 	case failure != "":
 		dot, label = th.textMuted, tr("aiOffline")
 	default:
@@ -699,18 +704,77 @@ func drawAIStatus(hdc uintptr) {
 	drawAISelector(hdc)
 }
 
-// The two model buttons. The heavier one is only offered when its weights are
-// actually present, so the interface never advertises a choice that would fail.
+// The two model buttons, and the download that fills in behind them.
+//
+// A model that is not on disk yet is still offered: choosing it starts the
+// fetch. Hiding the option until the file happens to exist would leave the user
+// with no way to ever get it.
 func drawAISelector(hdc uintptr) {
-	heavy, hasHeavy := heaviestAvailableModel()
-	usingHeavy := hasHeavy && strings.EqualFold(advisorSelectedModel, heavy.Path)
-
-	drawAIChoice(hdc, spatial.aiLight, tr("aiLightShort"), !usingHeavy, true, hoverAILight)
-	label := tr("aiHeavyShort")
-	if !hasHeavy {
-		label = tr("aiHeavyMissing")
+	if download := advisorDownloadStatus(); download.Active {
+		drawAIDownloadBar(hdc, download)
+		return
 	}
-	drawAIChoice(hdc, spatial.aiHeavy, label, usingHeavy, hasHeavy, hoverAIHeavy)
+	// A model that still has to be fetched says so, so a click on it is never a
+	// surprise gigabyte.
+	light, strong := tr("aiLightShort"), tr("aiHeavyShort")
+	if !advisorModelPresent("light") {
+		light += " ↓"
+	}
+	if !advisorModelPresent("strong") {
+		strong += " ↓"
+	}
+	drawAIChoice(hdc, spatial.aiLight, light, advisorUsingModel("light"), true, hoverAILight)
+	drawAIChoice(hdc, spatial.aiHeavy, strong, advisorUsingModel("strong"), true, hoverAIHeavy)
+}
+
+// advisorUsingModel reports whether a catalogue entry is the one loaded. The
+// file is matched wherever it actually is, since weights fetched by hand carry
+// the name their publisher gave them.
+func advisorUsingModel(id string) bool {
+	entry, ok := advisorCatalogEntryByID(id)
+	if !ok {
+		return false
+	}
+	if strings.EqualFold(advisorSelectedModel, advisorModelFile(entry)) {
+		return true
+	}
+	existing, present := findExistingModel(entry)
+	return present && strings.EqualFold(advisorSelectedModel, existing)
+}
+
+// The progress bar replaces both buttons while a model is coming down. A
+// transfer of this size is worth the whole width: a thin sliver moving for ten
+// minutes reads as a stall.
+func drawAIDownloadBar(hdc uintptr, state advisorDownloadState) {
+	r := rect{spatial.aiLight.Left, spatial.aiLight.Top, spatial.aiHeavy.Right, spatial.aiHeavy.Bottom}
+	radius := height(r) / 2
+	drawSpatialRoundedMaterial(hdc, r, radius, th.sunken, th.sunkenAlt, th.stroke)
+
+	// The filled portion is clipped to the same rounded shape, so it does not
+	// square off the ends of the track as it grows.
+	filled := int32(float64(width(r)) * spatialClamp(state.Fraction, 0, 1))
+	if filled > 2 {
+		saved, _, _ := pSaveDC.Call(hdc)
+		region, _, _ := pCreateRoundRectRgn.Call(i32arg(r.Left), i32arg(r.Top), i32arg(r.Right+1), i32arg(r.Bottom+1), uintptr(uint32(radius*2)), uintptr(uint32(radius*2)))
+		if region != 0 {
+			pSelectClipRgn.Call(hdc, region)
+		}
+		accentFill(hdc, rect{r.Left, r.Top, r.Left + filled, r.Bottom}, radius)
+		if region != 0 {
+			pDeleteObject.Call(region)
+		}
+		if saved != 0 {
+			pRestoreDC.Call(hdc, saved)
+		}
+	}
+
+	label := fmt.Sprintf("%s  %.0f%%", state.Label, state.Fraction*100)
+	if state.Total > 0 {
+		label = fmt.Sprintf("%s  %.0f%%  ·  %.1f/%.1f GB",
+			state.Label, state.Fraction*100,
+			float64(state.Received)/(1<<30), float64(state.Total)/(1<<30))
+	}
+	text(hdc, label, inset(r, 8), hFontSmall, th.textPrimary, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func drawAIChoice(hdc uintptr, r rect, label string, active, available bool, id int) {
@@ -1623,13 +1687,9 @@ func spatialClick(x, y int32) {
 	case contains(spatial.language, x, y):
 		showLanguageMenu()
 	case contains(spatial.aiLight, x, y):
-		selectAdvisorModel("")
+		chooseAdvisorModel("light")
 	case contains(spatial.aiHeavy, x, y):
-		if heavy, ok := heaviestAvailableModel(); ok {
-			selectAdvisorModel(heavy.Path)
-		} else {
-			showAdvisorModelMenu()
-		}
+		chooseAdvisorModel("strong")
 	case contains(spatial.aiStatus, x, y):
 		showAdvisorModelMenu()
 	case contains(spatial.advanced, x, y):
