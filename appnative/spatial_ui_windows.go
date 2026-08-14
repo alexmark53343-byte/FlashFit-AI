@@ -1041,11 +1041,13 @@ func modelChecks() []modelCheck {
 	}
 	checks = append(checks, adhesion)
 
-	// The model's contribution is reported, never silent: the user sees what it
-	// thought the part was and whether the veto let its advice through.
+	// The three layers, in the order they act: the model recognises, the
+	// guardrail judges the recognition, S.O.G secures the profile. Each reports
+	// for itself so it is visible which one is speaking.
 	if check, ok := advisorCheck(); ok {
 		checks = append(checks, check)
 	}
+	checks = append(checks, guardrailCheck())
 	// The dry run over the finished profile: predicted defects, before the plate.
 	checks = append(checks, printReadinessChecks()...)
 	return checks
@@ -1092,6 +1094,17 @@ func printReadinessChecks() []modelCheck {
 	return rows
 }
 
+// The three layers each get their own row.
+//
+//	checkAI     what the model recognised
+//	checkGuard  whether the guardrail believed it
+//	checkSOG    what S.O.G did to the profile
+//
+// They were folded into one row before, and that hid the middle layer
+// completely. The guardrail's whole purpose is to overrule the model when the
+// mesh disagrees with it — which is precisely the event worth watching happen,
+// and it was being reported as a footnote on the model's own row, as though the
+// model had reported its own error.
 func advisorCheck() (modelCheck, bool) {
 	ready, starting, failure := advisorServer.status()
 	switch {
@@ -1107,43 +1120,40 @@ func advisorCheck() (modelCheck, bool) {
 	if !outcome.Used {
 		return modelCheck{label: tr("checkAI"), detail: tr("checkAIReady"), level: 0}, true
 	}
-	// A guess we were told not to trust is not shown as a recognition.
+	// This row is the recognition and nothing else: what the model thought the
+	// part was. Whether that was believed is the next row's business.
 	object := strings.TrimSpace(outcome.Object)
-	if strings.EqualFold(object, "unknown") {
-		object = ""
+	if object == "" || strings.EqualFold(object, "unknown") {
+		return modelCheck{label: tr("checkAI"), detail: tr("checkAIUnnamed"), level: 0}, true
+	}
+	return modelCheck{label: tr("checkAI"), detail: object, level: 0}, true
+}
+
+// guardrailCheck reports the verdict passed on what the model said. Like the
+// S.O.G row it is always present, because a layer that only appears when it
+// objects cannot be told apart from one that is not running.
+func guardrailCheck() modelCheck {
+	outcome := shared.LastAdvisorOutcome
+	row := func(key string, level int) modelCheck {
+		return modelCheck{label: tr("checkGuard"), detail: tr(key), level: level}
 	}
 	switch {
-	case outcome.Accepted:
-		detail := tr("checkAIApplied")
-		if object != "" {
-			detail = object
-		}
-		if outcome.Scaled {
-			detail += " · " + tr("checkAIScaled")
-		}
-		return modelCheck{label: tr("checkAI"), detail: detail, level: 0}, true
-
+	case !outcome.Used:
+		return row("checkGuardIdle", 0)
 	case outcome.Mismatch != "":
-		// Recognised, but the mesh did not back the claim about its shape. Both
-		// halves are worth saying: the name is probably right, the class was
-		// dropped, and the profile came from the rules.
-		detail := tr("checkAIShapeMismatch")
-		if object != "" {
-			detail = object + " · " + detail
-		}
-		return modelCheck{label: tr("checkAI"), detail: detail, level: 1}, true
-
+		// The event this layer exists for: the mesh contradicted the class, so
+		// the class was withdrawn and only the name kept.
+		return row("checkGuardWithdrawn", 1)
+	case outcome.Detail != "":
+		return modelCheck{label: tr("checkGuard"), detail: trf("checkGuardRejected", outcome.Detail), level: 1}
 	case outcome.Abstained:
-		// The model answered and asked for nothing. That is a legitimate reply,
-		// not a rejection, and showing "Rejected:" with an empty reason after it
-		// would be simply wrong.
-		detail := tr("checkAINoChange")
-		if object != "" {
-			detail = object + " · " + detail
-		}
-		return modelCheck{label: tr("checkAI"), detail: detail, level: 0}, true
+		return row("checkGuardNoProposal", 0)
+	case outcome.Scaled:
+		return row("checkGuardScaled", 0)
+	case outcome.Accepted:
+		return row("checkGuardConfirmed", 0)
 	}
-	return modelCheck{label: tr("checkAI"), detail: trf("checkAIVetoed", outcome.Detail), level: 1}, true
+	return row("checkGuardIdle", 0)
 }
 
 func checkLevelColor(level int) uintptr {
