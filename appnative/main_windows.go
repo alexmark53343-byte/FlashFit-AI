@@ -26,7 +26,7 @@ var (
 	// The one place the version is written. The window chrome, the title, the
 	// --version flag and the log line at startup all read it from here, so a
 	// build cannot claim one version on screen and another in its own log.
-	buildVersion = "4.4.2-three-layer-safety-beta"
+	buildVersion = "4.4.3-three-layer-safety-beta"
 	appTitle     = "FlashFit AI Spatial " + buildVersion
 )
 

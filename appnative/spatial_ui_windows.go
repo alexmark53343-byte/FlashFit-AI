@@ -997,11 +997,26 @@ type modelCheck struct {
 // Concrete, actionable findings about the loaded mesh. "Something is wrong" is
 // not useful on its own; each row names the property and what it implies.
 func modelChecks() []modelCheck {
+	// The three layers come first, and they are reported whether or not a model
+	// is loaded.
+	//
+	// They used to be appended last, after the mesh checks, and the whole list
+	// was skipped entirely until a model had been analysed. Both were wrong for
+	// the same reason: the row that answers "is this thing running" was the
+	// first to be dropped when the panel ran short of height, and did not exist
+	// at all in the state where the user is most likely to be asking. The mesh
+	// checks describe a file and can wait; these describe the application.
+	checks := make([]modelCheck, 0, 8)
+	if check, ok := advisorCheck(); ok {
+		checks = append(checks, check)
+	}
+	checks = append(checks, guardrailCheck())
+	checks = append(checks, sogCheck())
+
 	if app.analysis == nil {
-		return nil
+		return checks
 	}
 	a := *app.analysis
-	checks := make([]modelCheck, 0, 4)
 
 	// Mesh defects are advisory: the slicer repairs them on load, and blocking
 	// on them made ordinary downloaded models unusable. Only a mesh broken in
@@ -1041,14 +1056,8 @@ func modelChecks() []modelCheck {
 	}
 	checks = append(checks, adhesion)
 
-	// The three layers, in the order they act: the model recognises, the
-	// guardrail judges the recognition, S.O.G secures the profile. Each reports
-	// for itself so it is visible which one is speaking.
-	if check, ok := advisorCheck(); ok {
-		checks = append(checks, check)
-	}
-	checks = append(checks, guardrailCheck())
-	// The dry run over the finished profile: predicted defects, before the plate.
+	// The defects predicted for this particular profile, after the rows that
+	// describe the machinery itself.
 	checks = append(checks, printReadinessChecks()...)
 	return checks
 }
@@ -1056,31 +1065,32 @@ func modelChecks() []modelCheck {
 // printReadinessChecks turns the predicted defects into rows. When nothing is
 // predicted it says so, because "no warnings" and "not checked yet" look the
 // same otherwise.
-func printReadinessChecks() []modelCheck {
-	readiness := shared.LastPrintReadiness
+// sogCheck reports what S.O.G did, and is always present.
+//
+// Drawing the row only when something had been corrected made "it ran and found
+// nothing" indistinguishable from "it never ran" — and the second is the one
+// state it is never in, because it is part of the application rather than
+// something that switches on.
+func sogCheck() modelCheck {
 	if app.recommendation == nil {
-		// S.O.G is part of the application, not something that switches on, so
-		// the row is there before there is anything to secure. Its absence read
-		// as "not running", which is the one thing it never is.
-		return []modelCheck{{label: tr("checkSOG"), detail: tr("checkSOGWaiting"), level: 0}}
+		return modelCheck{label: tr("checkSOG"), detail: tr("checkSOGWaiting"), level: 0}
 	}
-	rows := make([]modelCheck, 0, len(readiness.Issues)+1)
-	// What S.O.G did comes first, and it is always said.
-	//
-	// Showing the row only when something was corrected made "it ran and found
-	// nothing" and "it never ran" look identical, which is not a state the user
-	// should have to guess at about the layer that authorises the print. So the
-	// row is present whenever there is a profile to have secured, and reports
-	// which of the three it is.
 	verdict := shared.LastSOGVerdict
 	switch {
 	case !verdict.Cleared:
-		rows = append(rows, modelCheck{label: tr("checkSOG"), detail: tr("checkSOGHeld"), level: 2})
+		return modelCheck{label: tr("checkSOG"), detail: tr("checkSOGHeld"), level: 2}
 	case len(verdict.Repairs) > 0:
-		rows = append(rows, modelCheck{label: tr("checkSOG"), detail: trf("checkSOGRepaired", len(verdict.Repairs)), level: 0})
-	default:
-		rows = append(rows, modelCheck{label: tr("checkSOG"), detail: tr("checkSOGClean"), level: 0})
+		return modelCheck{label: tr("checkSOG"), detail: trf("checkSOGRepaired", len(verdict.Repairs)), level: 0}
 	}
+	return modelCheck{label: tr("checkSOG"), detail: tr("checkSOGClean"), level: 0}
+}
+
+func printReadinessChecks() []modelCheck {
+	readiness := shared.LastPrintReadiness
+	if app.recommendation == nil {
+		return nil
+	}
+	rows := make([]modelCheck, 0, len(readiness.Issues)+1)
 	if len(readiness.Issues) == 0 {
 		return append(rows, modelCheck{label: tr("checkSimulation"), detail: tr("checkSimulationClear"), level: 0})
 	}
@@ -1175,8 +1185,16 @@ func drawPlanCard(hdc uintptr, r rect) {
 		eyebrow(hdc, tr("checksTitle"), rect{r.Left, r.Top, r.Right, r.Top + 18}, DT_LEFT|DT_VCENTER)
 		y := r.Top + 24
 		rowH := int32(24)
-		for _, check := range checks {
+		for index, check := range checks {
 			if y+rowH > r.Bottom {
+				// Rows that do not fit used to vanish with no sign of it, which
+				// is how a check could be reported and never seen. Say how many
+				// are hidden instead of quietly losing them.
+				if hidden := len(checks) - index; hidden > 0 && y <= r.Bottom {
+					text(hdc, trf("checksHidden", hidden), rect{r.Left + 16, y, r.Right, y + rowH},
+						hFontSmall, th.textMuted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+					y += rowH
+				}
 				break
 			}
 			color := checkLevelColor(check.level)
