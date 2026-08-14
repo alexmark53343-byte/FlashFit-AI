@@ -410,6 +410,10 @@ func main() {
 	if len(os.Args) == 3 && os.Args[1] == "--discover-worker" {
 		os.Exit(runDiscoveryWorker(os.Args[2]))
 	}
+	// Before anything can fail: a GUI binary has no console, so without this
+	// the runtime's report of a fatal error is written to a handle that does
+	// not exist and the window just disappears.
+	captureRuntimeFailures()
 	defer func() {
 		if r := recover(); r != nil {
 			writeLog(fmt.Sprintf("PANIC main: %v\n%s", r, debug.Stack()))
@@ -675,6 +679,10 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) (ret uintp
 		invalidateChrome()
 		return 0
 	case WM_ADVISOR_READY:
+		if failure := shared.AdvisorPanicLog; failure != "" {
+			writeLog("PANIC " + failure)
+			shared.AdvisorPanicLog = ""
+		}
 		// Whatever the outcome, the inspector now has something new to say.
 		renderAnalysis()
 		invalidateSpatial()
@@ -1238,14 +1246,26 @@ func startPreviewMeshLoad(a shared.ModelAnalysis, generation uint64) {
 		return
 	}
 	go func() {
-		tris, err := shared.LoadPreviewMesh(source, stagePreviewTriangleBudget)
-		if err != nil {
-			writeLog("preview mesh unavailable: " + err.Error())
-		}
-		pending.mu.Lock()
-		pending.previewMesh, pending.previewGeneration = tris, generation
-		pending.mu.Unlock()
-		pPostMessage.Call(mainHwnd, WM_PREVIEW_DONE, 0, 0)
+		var tris []shared.PreviewTriangle
+		// The window is told the load finished whatever happened, including a
+		// panic: leaving it waiting on a message that never arrives would trade
+		// a crash for a stage stuck on the placeholder.
+		defer func() {
+			pending.mu.Lock()
+			pending.previewMesh, pending.previewGeneration = tris, generation
+			pending.mu.Unlock()
+			pPostMessage.Call(mainHwnd, WM_PREVIEW_DONE, 0, 0)
+		}()
+		// Geometry work on a file the code has never seen. A malformed mesh
+		// that trips a bounds check here used to take the whole window with it.
+		guard("preview mesh", func() {
+			loaded, err := shared.LoadPreviewMesh(source, stagePreviewTriangleBudget)
+			if err != nil {
+				writeLog("preview mesh unavailable: " + err.Error())
+				return
+			}
+			tris = loaded
+		})
 	}()
 }
 
