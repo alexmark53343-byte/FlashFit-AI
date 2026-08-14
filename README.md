@@ -10,7 +10,7 @@ combination of settings for each model and material is still needlessly hard.
 
 ## Downloads
 
-### Windows 11 x64 — 4.4.3 · current
+### Windows 11 x64 — 4.4.4 · current
 
 [**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.4 MB
 

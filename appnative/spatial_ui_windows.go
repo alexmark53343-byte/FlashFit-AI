@@ -1010,6 +1010,7 @@ func modelChecks() []modelCheck {
 	if check, ok := advisorCheck(); ok {
 		checks = append(checks, check)
 	}
+	checks = append(checks, protectionCheck())
 	checks = append(checks, guardrailCheck())
 	checks = append(checks, sogCheck())
 
@@ -1137,6 +1138,28 @@ func advisorCheck() (modelCheck, bool) {
 		return modelCheck{label: tr("checkAI"), detail: tr("checkAIUnnamed"), level: 0}, true
 	}
 	return modelCheck{label: tr("checkAI"), detail: object, level: 0}, true
+}
+
+// protectionCheck is the one-glance answer: are the two safety layers doing
+// their job right now, yes or no.
+//
+// The rows below it report what each layer decided, which is detail — and
+// detail does not answer "is this protecting me". That question wants a green
+// dot or a red one, so this row carries no nuance on purpose: green only when
+// both layers are operating on a real profile, red the moment they are not.
+//
+// They stop being able to work when no profile could be produced at all — an
+// unresolved printer, a filament the machine cannot run. Nothing was checked
+// then, and showing green over nothing would be the worst thing this row could
+// do.
+func protectionCheck() modelCheck {
+	label := tr("checkProtection")
+	if app.analysis != nil && app.recommendation == nil {
+		// A model is loaded but no profile came out of it, so there was nothing
+		// for either layer to inspect.
+		return modelCheck{label: label, detail: tr("checkProtectionOff"), level: 2}
+	}
+	return modelCheck{label: label, detail: tr("checkProtectionOn"), level: 0}
 }
 
 // guardrailCheck reports the verdict passed on what the model said. Like the
