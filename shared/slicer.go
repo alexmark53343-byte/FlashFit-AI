@@ -822,7 +822,11 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 		} else {
 			// STL input is cached byte-for-byte, so it has to become a 3MF
 			// before it can carry settings. OBJ and 3MF already are one.
-			geometry, e := EnsureGeometry3MF(req.Model.StoredModelPath, work)
+			//
+			// It is also placed on the plate here. A mesh arrives wherever its
+			// author left it, and nothing moved it, so the project opened with
+			// the part beside the bed instead of on it.
+			geometry, e := PlaceGeometryOnPlate(req.Model.StoredModelPath, work, ManualFor(printer).UsablePlate)
 			if e != nil {
 				return ImportResult{}, fmt.Errorf("geometria non convertibile in progetto: %w", e)
 			}

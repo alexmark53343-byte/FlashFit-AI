@@ -183,9 +183,12 @@ func projectConfigText(rec Recommendation, printer PrinterProfile, profileName s
 func writePlateProjects(plates []Plate, basePath string, rec Recommendation, printer PrinterProfile, profileName, workDir string, sources ProjectSources) ([]string, error) {
 	written := make([]string, 0, len(plates))
 	stem := strings.TrimSuffix(basePath, filepath.Ext(basePath))
+	usable := ManualFor(printer).UsablePlate
 	for i, plate := range plates {
 		geometry := filepath.Join(workDir, fmt.Sprintf("plate-%d.3mf", i+1))
-		if err := writeGeometryOnly3MF(geometry, PlateTriangles(plate)); err != nil {
+		// Each plate is placed on its own bed: pieces keep the arrangement
+		// they were packed with, the group is centred and set down on it.
+		if err := writeGeometryOnly3MF(geometry, centreOnPlate(PlateTriangles(plate), usable)); err != nil {
 			return nil, fmt.Errorf("piatto %d non generabile: %w", i+1, err)
 		}
 		out := basePath
