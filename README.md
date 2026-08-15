@@ -18,9 +18,13 @@ Extract and run. Nothing to install. The AI model is not in the download — the
 application fetches it the first time you choose one, so the app itself stays
 small.
 
-Compare the executable against `SHA256SUMS.txt` inside the archive. It is not
-Authenticode-signed yet, so Windows SmartScreen will report an unknown
-publisher.
+The executable is Authenticode-signed with a self-signed certificate, shipped
+in the archive as `FlashFit-AI-CodeSigning.cer`. Windows verifies the signature
+but has no reason to trust who issued it, so SmartScreen still reports an
+unknown publisher — only a certificate from a recognised authority changes
+that. What the signature does give you is tamper evidence and a stable identity
+across releases: check it with `Get-AuthenticodeSignature`, and compare the
+file against `SHA256SUMS.txt`. The signing step is `tools/sign.ps1`.
 
 ### macOS Apple Silicon — 3.6 Beta · older
 

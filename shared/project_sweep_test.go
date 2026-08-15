@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // checkProjectIsLoadable asserts the things a slicer needs in order to put the
@@ -140,4 +141,60 @@ func TestEveryPlateProjectIsLoadable(t *testing.T) {
 	for i, path := range written {
 		checkProjectIsLoadable(t, path, "piatto "+string(rune('1'+i)))
 	}
+}
+
+// Producing a project has to stay quick on every machine, not merely work.
+//
+// The budget is deliberately generous — this is a regression guard, not a
+// benchmark. What it catches is a change that turns a fifth of a second into
+// several: recompressing what could be copied, rewriting geometry that was
+// already fine, walking the mesh once per setting. The measured cost today is
+// around 200 ms for a 135k-triangle model, so a whole second per project means
+// something started doing real work that it should not.
+func TestProjectWritingStaysQuick(t *testing.T) {
+	filaments, err := LoadBuiltinFilaments()
+	if err != nil || len(filaments) == 0 {
+		t.Fatalf("catalogo filamenti non caricabile: %v", err)
+	}
+	// A mesh with enough triangles that the cost is dominated by the geometry,
+	// which is where a regression would show.
+	var tris []triangle
+	for i := 0; i < 400; i++ {
+		x := float64(i%20) * 2
+		y := float64(i/20) * 2
+		tris = append(tris, box(x, y, 0, 1.5, 1.5, 1.5)...)
+	}
+	dir := t.TempDir()
+	geometry := filepath.Join(dir, "geo.3mf")
+	if err := writeGeometryOnly3MF(geometry, tris); err != nil {
+		t.Fatalf("geometria non scrivibile: %v", err)
+	}
+	a := ModelAnalysis{
+		Filename: "pezzo.stl", Category: "Oggetto tecnico/decorativo",
+		Extents: [3]float64{40, 40, 2}, Volume: 2000, SurfaceArea: 5400,
+		Watertight: true, TriangleCount: len(tris),
+	}
+
+	const budget = time.Second
+	slowest := time.Duration(0)
+	slowestOn := ""
+	for _, printer := range SupportedPrinters() {
+		rec, err := RecommendForPrinter(a, filaments[0], printer, "balanced")
+		if err != nil {
+			continue
+		}
+		out := filepath.Join(dir, safeProfileName(printer.ID)+".3mf")
+		start := time.Now()
+		SecureProfile(&rec, a, filaments[0], printer)
+		if err := WriteProjectWithSources(geometry, out, rec, printer, "FlashFit", ProjectSources{}); err != nil {
+			t.Fatalf("%s: progetto non scrivibile: %v", printer.Model, err)
+		}
+		if elapsed := time.Since(start); elapsed > slowest {
+			slowest, slowestOn = elapsed, printer.Model
+		}
+	}
+	if slowest > budget {
+		t.Fatalf("%s ha impiegato %v per un progetto, oltre il limite di %v", slowestOn, slowest, budget)
+	}
+	t.Logf("la macchina più lenta è %s con %v (limite %v)", slowestOn, slowest, budget)
 }
