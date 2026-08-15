@@ -12,25 +12,44 @@ combination of settings for each model and material is still needlessly hard.
 
 ### Windows 11 x64 — 4.4.7 · current
 
-[**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.4 MB
+**Recommended — install with one command (no SmartScreen prompt):**
 
-Extract and run. Nothing to install. The AI model is not in the download — the
-application fetches it the first time you choose one, so the app itself stays
-small.
+```powershell
+irm https://raw.githubusercontent.com/alexmark53343-byte/FlashFit-AI/main/tools/install.ps1 | iex
+```
 
-**Windows will warn you the first time.** SmartScreen shows "PC protetto da
-Windows / unrecognised app". Click **Ulteriori informazioni → Esegui comunque**,
-or right-click the downloaded ZIP → Properties → **Unblock** before extracting.
+This is not a trick and it disables nothing. SmartScreen's "unrecognised app"
+block only fires on files carrying the Mark-of-the-Web — the tag a *browser*
+attaches to a download. A file fetched by PowerShell never gets that tag, so
+Windows runs it without the prompt, exactly as a binary you compiled yourself
+would. The script still earns the trust it skips asking for: it checks the
+hash, the Authenticode signature and (with the GitHub CLI) the Sigstore
+provenance before placing anything, and refuses a file that fails any of them.
+Read it first — it is [`tools/install.ps1`](tools/install.ps1), and `irm | iex`
+runs exactly what you see there.
 
-That warning is not about the app being broken or unsigned, and being open
-source does not remove it. SmartScreen asks one question — does Microsoft
-recognise this publisher — and the only two answers are a certificate bought
-from a recognised authority (a few hundred euros a year, with identity checks)
-or enough downloads over enough time to build a reputation. This project has
-neither yet, so the warning is honest and you should expect it.
+**Or build it yourself** — a locally compiled binary never carries the mark
+either, so it never prompts:
 
-What is offered instead is verification you can perform yourself, which is what
-an open project can actually give:
+```powershell
+git clone https://github.com/alexmark53343-byte/FlashFit-AI
+cd FlashFit-AI; .\tools\build.ps1 -Desktop
+```
+
+**Or download the ZIP** the usual way:
+
+[**FlashFit-AI-Windows-11-x64.zip**](https://github.com/alexmark53343-byte/FlashFit-AI/raw/main/downloads/FlashFit-AI-Windows-11-x64.zip) · 3.4 MB — extract and run. The AI
+model is not inside it; the app fetches it the first time you pick one.
+
+A browser download *does* carry the mark, so this route shows SmartScreen once.
+Right-click the ZIP → Properties → **Unblock** before extracting to avoid it, or
+click **Ulteriori informazioni → Esegui comunque** when it appears. The warning
+is not about the app being broken: SmartScreen asks only whether Microsoft
+recognises the publisher, and being open source or self-signed does not answer
+that — only a certificate from a recognised authority or enough downloads over
+time does. The install command above sidesteps it honestly instead.
+
+Whichever route, the same three checks are yours to run:
 
 | | What it proves |
 |---|---|
