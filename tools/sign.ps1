@@ -39,7 +39,7 @@ $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
     Select-Object -First 1
 
 if ($null -eq $cert) {
-    Write-Host "Nessun certificato valido per $Subject: ne creo uno nuovo."
+    Write-Host "Nessun certificato valido per ${Subject}: ne creo uno nuovo."
     # CurrentUser\My is the user's own key store. Nothing here is added to any
     # trust root — establishing trust in a self-signed key is a decision for
     # whoever installs it, not for the build script.
