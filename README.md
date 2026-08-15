@@ -18,13 +18,29 @@ Extract and run. Nothing to install. The AI model is not in the download — the
 application fetches it the first time you choose one, so the app itself stays
 small.
 
-The executable is Authenticode-signed with a self-signed certificate, shipped
-in the archive as `FlashFit-AI-CodeSigning.cer`. Windows verifies the signature
-but has no reason to trust who issued it, so SmartScreen still reports an
-unknown publisher — only a certificate from a recognised authority changes
-that. What the signature does give you is tamper evidence and a stable identity
-across releases: check it with `Get-AuthenticodeSignature`, and compare the
-file against `SHA256SUMS.txt`. The signing step is `tools/sign.ps1`.
+**Windows will warn you the first time.** SmartScreen shows "PC protetto da
+Windows / unrecognised app". Click **Ulteriori informazioni → Esegui comunque**,
+or right-click the downloaded ZIP → Properties → **Unblock** before extracting.
+
+That warning is not about the app being broken or unsigned, and being open
+source does not remove it. SmartScreen asks one question — does Microsoft
+recognise this publisher — and the only two answers are a certificate bought
+from a recognised authority (a few hundred euros a year, with identity checks)
+or enough downloads over enough time to build a reputation. This project has
+neither yet, so the warning is honest and you should expect it.
+
+What is offered instead is verification you can perform yourself, which is what
+an open project can actually give:
+
+| | What it proves |
+|---|---|
+| `SHA256SUMS.txt` | the file is byte-for-byte the one that was published |
+| `Get-AuthenticodeSignature` | nothing has modified the executable since it was built, and it carries the same key as every other release (`FlashFit-AI-CodeSigning.cer`, self-signed — `tools/sign.ps1`) |
+| `gh attestation verify` | this binary was built by the repository's own workflow, from this source, at a named commit — signed through Sigstore, not by us |
+
+```
+gh attestation verify FlashFit-AI-Windows-11-x64.zip --repo alexmark53343-byte/FlashFit-AI
+```
 
 ### macOS Apple Silicon — 3.6 Beta · older
 

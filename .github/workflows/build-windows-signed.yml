@@ -10,6 +10,12 @@ on:
 
 permissions:
   contents: read
+  # Sigstore needs an OIDC token to prove which workflow, repository and
+  # commit produced the binary. This is the open-source half of trusting a
+  # download: not a certificate someone paid for, but a signed statement
+  # that anyone can check against the source.
+  id-token: write
+  attestations: write
 
 jobs:
   signed-candidate:
@@ -65,6 +71,22 @@ jobs:
             -Executable dist/FlashFit-AI-Windows-11.exe `
             -OutputDirectory dist/release `
             -Version '${{ inputs.version }}'
+
+      # Provenance: a Sigstore-backed statement that this exact binary came
+      # from this repository, at this commit, built by this workflow.
+      #
+      # It is worth being clear about what this is not. It does not quiet
+      # SmartScreen, which asks whether Microsoft recognises the publisher
+      # and has no opinion on whether the source is public. What it does is
+      # the thing an open project can actually offer in place of a paid
+      # identity: anyone can check the download against the source it claims
+      # to come from, without trusting us to tell the truth about it.
+      #
+      #   gh attestation verify FlashFit-AI-Windows-11.exe --repo alexmark53343-byte/FlashFit-AI
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/FlashFit-AI-Windows-11-x64.zip
 
       - name: Upload signed candidate only
         uses: actions/upload-artifact@v4
