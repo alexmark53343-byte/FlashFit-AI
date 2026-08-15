@@ -6,7 +6,7 @@ on:
       version:
         description: Versione candidata, senza prefisso v
         required: true
-        default: 4.3.0-multi-printer-engineering-beta
+        default: 4.4.8-three-layer-safety-beta
 
 permissions:
   contents: read
