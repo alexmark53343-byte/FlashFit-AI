@@ -125,8 +125,9 @@ type spatialRegions struct {
 	perfect   rect
 	open      rect
 
-	status rect
-	stats  rect
+	status   rect
+	stats    rect
+	repoLink rect
 }
 
 var (
@@ -950,7 +951,6 @@ func drawDashedFrame(hdc uintptr, r rect) {
 	pDeleteObject.Call(dash)
 }
 
-
 // The inspector: one flush panel, hairline-separated rows, no nested cards.
 func drawInspector(hdc uintptr) {
 	panel := spatial.inspector
@@ -1428,8 +1428,16 @@ func drawFooter(hdc uintptr, w, h int32) {
 		glow(hdc, 22, cy, 14, 14, dotColor, uint8(40+animPulse(2.0)*60))
 	}
 	circle(hdc, 22, cy, 3, dotColor, dotColor)
-	text(hdc, currentStatusText(), rect{34, r.Top, w - 200, r.Bottom}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(hdc, "v"+buildVersion, rect{w - 190, r.Top, w - 16, r.Bottom}, hFontSmall, th.textMuted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+
+	// The version doubles as a link to the source, so someone looking at the
+	// build has a one-click way to the repository it came from — updates,
+	// issues, the code itself. It brightens on hover like every other control,
+	// which is what tells the eye it is clickable rather than a label.
+	label := "v" + buildVersion + "  ·  " + tr("repoLink")
+	spatial.repoLink = rect{w - 360, r.Top, w - 16, r.Bottom}
+	linkColor := mixColor(th.textMuted, th.accent, hoverOf(hoverRepoLink))
+	text(hdc, label, spatial.repoLink, hFontSmall, linkColor, DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	text(hdc, currentStatusText(), rect{34, r.Top, spatial.repoLink.Left - 12, r.Bottom}, hFontSmall, th.textSecondary, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 }
 
 func drawSpatialScene(hdc uintptr, client rect) {
@@ -1846,6 +1854,8 @@ func spatialClick(x, y int32) {
 		setQuality("balanced")
 	case contains(spatial.perfect, x, y):
 		setQuality("perfect")
+	case contains(spatial.repoLink, x, y):
+		openURL(repositoryURL)
 	case contains(spatial.open, x, y):
 		if app.ready {
 			startImport()

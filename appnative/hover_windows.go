@@ -32,6 +32,7 @@ const (
 	hoverTool4
 	hoverAILight
 	hoverAIHeavy
+	hoverRepoLink
 	hoverRegionCount
 )
 
@@ -68,6 +69,8 @@ func regionAt(x, y int32) int {
 		return hoverPerfect
 	case contains(spatial.open, x, y):
 		return hoverOpen
+	case contains(spatial.repoLink, x, y):
+		return hoverRepoLink
 	}
 	for i, r := range spatial.tools {
 		if contains(r, x, y) {

@@ -26,30 +26,30 @@ var (
 	// The one place the version is written. The window chrome, the title, the
 	// --version flag and the log line at startup all read it from here, so a
 	// build cannot claim one version on screen and another in its own log.
-	buildVersion = "4.4.7-three-layer-safety-beta"
+	buildVersion = "4.4.8-three-layer-safety-beta"
 	appTitle     = "FlashFit AI Spatial " + buildVersion
 )
 
 const (
 	className = "FlashFitAI_Spatial_MainWindow_v40"
 
-	WM_CREATE         = 0x0001
-	WM_DESTROY        = 0x0002
-	WM_SIZE           = 0x0005
-	WM_CLOSE          = 0x0010
-	WM_COMMAND        = 0x0111
-	WM_DROPFILES      = 0x0233
-	WM_SETFONT        = 0x0030
-	WM_LBUTTONDOWN    = 0x0201
-	WM_LBUTTONDBLCLK  = 0x0203
-	WM_MOUSEMOVE      = 0x0200
-	CS_DBLCLKS        = 0x0008
-	WM_APP            = 0x8000
-	WM_DISCOVERY_DONE = WM_APP + 1
-	WM_ANALYSIS_DONE  = WM_APP + 2
-	WM_IMPORT_DONE    = WM_APP + 3
-	WM_SHOW_TEXTURES  = WM_APP + 4
-	WM_PREVIEW_DONE   = WM_APP + 5
+	WM_CREATE           = 0x0001
+	WM_DESTROY          = 0x0002
+	WM_SIZE             = 0x0005
+	WM_CLOSE            = 0x0010
+	WM_COMMAND          = 0x0111
+	WM_DROPFILES        = 0x0233
+	WM_SETFONT          = 0x0030
+	WM_LBUTTONDOWN      = 0x0201
+	WM_LBUTTONDBLCLK    = 0x0203
+	WM_MOUSEMOVE        = 0x0200
+	CS_DBLCLKS          = 0x0008
+	WM_APP              = 0x8000
+	WM_DISCOVERY_DONE   = WM_APP + 1
+	WM_ANALYSIS_DONE    = WM_APP + 2
+	WM_IMPORT_DONE      = WM_APP + 3
+	WM_SHOW_TEXTURES    = WM_APP + 4
+	WM_PREVIEW_DONE     = WM_APP + 5
 	WM_ADVISOR_READY    = WM_APP + 6
 	WM_ADVISOR_PROGRESS = WM_APP + 7
 
@@ -210,6 +210,7 @@ var (
 	pDragAcceptFiles   = shell32.NewProc("DragAcceptFiles")
 	pDragQueryFile     = shell32.NewProc("DragQueryFileW")
 	pDragFinish        = shell32.NewProc("DragFinish")
+	pShellExecute      = shell32.NewProc("ShellExecuteW")
 	pGetOpenFileName   = comdlg32.NewProc("GetOpenFileNameW")
 )
 
@@ -1619,6 +1620,7 @@ func messageBox(owner uintptr, text, title string, flags uintptr) int {
 	r, _, _ := pMessageBox.Call(owner, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), flags)
 	return int(r)
 }
+
 // Where generated projects go.
 //
 // The old version joined the literal string "Documents" onto the home
@@ -1729,4 +1731,22 @@ func writeLog(s string) {
 		fmt.Fprintf(f, "%s %s\r\n", time.Now().Format(time.RFC3339), s)
 		f.Close()
 	}
+}
+
+// The project's home, opened from the version link in the footer.
+const repositoryURL = "https://github.com/alexmark53343-byte/FlashFit-AI"
+
+// openURL hands a link to the user's default browser.
+//
+// It is only ever called with a constant this binary carries, never with
+// anything read from a model, a file or the network — an "open this address"
+// primitive that takes untrusted input is how an app ends up launching things
+// it should not, and there is no reason to build that door just to reach one
+// known page.
+func openURL(url string) {
+	verb := utf16Ptr("open")
+	target := utf16Ptr(url)
+	// SW_SHOWNORMAL (1). A failure here is silent on purpose: not opening a
+	// browser is a disappointment, not an error worth a dialog over.
+	pShellExecute.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(target)), 0, 0, 1)
 }
