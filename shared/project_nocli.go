@@ -41,6 +41,20 @@ import (
 // project_settings.config and the contents are JSON.
 const projectConfigEntry = "Metadata/project_settings.config"
 
+// modelSettingsEntry is the other half of a Bambu/Orca project, and leaving it
+// out is why the settings arrived and the model did not.
+//
+// A 3MF with a valid <build> is loaded object-by-object when it is opened as a
+// *model*. Attaching project_settings.config changes what the file is: the
+// slicer now recognises a project, and a project describes its objects and its
+// plates here. Ours declared none, so Bambu Studio did exactly what it was
+// told — read the settings, put nothing on the plate.
+//
+// It is only synthesised when the source has none. A 3MF that came from a
+// slicer already carries its own, describing objects, parts and placements this
+// has no business inventing.
+const modelSettingsEntry = "Metadata/model_settings.config"
+
 // Filament settings are per-extruder, so the slicer expects them as arrays even
 // on a single-extruder machine. Process settings are plain strings.
 var filamentArrayKeys = map[string]bool{
@@ -82,10 +96,19 @@ func WriteProjectWithSources(geometry3MF, outPath string, rec Recommendation, pr
 	}
 	writer := zip.NewWriter(out)
 
+	// What the source already describes decides what has to be added: a 3MF
+	// written by a slicer brings its own object and plate description, and
+	// overwriting that with a synthesised one would throw away real placements.
+	hasModelSettings := false
+	var modelXML []byte
+
 	for _, entry := range source.File {
 		// Our own config wins if the source somehow already carries one.
 		if strings.EqualFold(entry.Name, projectConfigEntry) {
 			continue
+		}
+		if strings.EqualFold(entry.Name, modelSettingsEntry) {
+			hasModelSettings = true
 		}
 		reader, err := entry.Open()
 		if err != nil {
@@ -100,12 +123,29 @@ func WriteProjectWithSources(geometry3MF, outPath string, rec Recommendation, pr
 			out.Close()
 			return err
 		}
-		_, copyErr := io.Copy(target, reader)
+		var copyErr error
+		if strings.EqualFold(entry.Name, modelEntry) {
+			// Kept so the objects it builds can be listed below.
+			modelXML, copyErr = io.ReadAll(reader)
+			if copyErr == nil {
+				_, copyErr = target.Write(modelXML)
+			}
+		} else {
+			_, copyErr = io.Copy(target, reader)
+		}
 		reader.Close()
 		if copyErr != nil {
 			writer.Close()
 			out.Close()
 			return copyErr
+		}
+	}
+
+	if !hasModelSettings {
+		if err := writeModelSettings(writer, modelXML, profileName); err != nil {
+			writer.Close()
+			out.Close()
+			return err
 		}
 	}
 
@@ -172,4 +212,96 @@ func writePlateProjects(plates []Plate, basePath string, rec Recommendation, pri
 // based install is a sibling DLL rather than the executable itself.
 func SlicerHasCLI(exePath string) bool {
 	return ProbeSlicerCLI(exePath) == nil
+}
+
+// modelEntry is the 3MF part that declares the build.
+const modelEntry = "3D/3dmodel.model"
+
+// writeModelSettings describes, for the slicer, the objects the build already
+// contains and the plate they belong to.
+//
+// The object ids are read out of the build rather than assumed, because a
+// project written for several plates, or from a file that held several objects,
+// declares more than one — and an instance pointing at an id that is not there
+// puts the plate back to empty, which is the failure being fixed.
+func writeModelSettings(writer *zip.Writer, modelXML []byte, name string) error {
+	ids := buildItemObjectIDs(modelXML)
+	if len(ids) == 0 {
+		// Nothing was built, so there is nothing to place. Writing a plate with
+		// no instances would be worse than writing nothing: it states, wrongly,
+		// that the plate is meant to be empty.
+		return nil
+	}
+	entry, err := writer.Create(modelSettingsEntry)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(entry, modelSettingsXML(ids, name))
+	return err
+}
+
+// buildItemObjectIDs pulls the objectid of every <item> in the build section.
+func buildItemObjectIDs(modelXML []byte) []string {
+	const marker = `objectid="`
+	var ids []string
+	seen := map[string]bool{}
+	text := string(modelXML)
+	for {
+		at := strings.Index(text, marker)
+		if at < 0 {
+			break
+		}
+		text = text[at+len(marker):]
+		end := strings.IndexByte(text, '"')
+		if end <= 0 {
+			break
+		}
+		id := text[:end]
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		text = text[end:]
+	}
+	return ids
+}
+
+// modelSettingsXML renders the object and plate description, in the shape these
+// slicers write themselves.
+func modelSettingsXML(ids []string, name string) string {
+	label := strings.TrimSpace(name)
+	if label == "" {
+		label = "FlashFit"
+	}
+	var b strings.Builder
+	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n")
+	for _, id := range ids {
+		fmt.Fprintf(&b, "  <object id=\"%s\">\n", xmlAttr(id))
+		fmt.Fprintf(&b, "    <metadata key=\"name\" value=\"%s\"/>\n", xmlAttr(label))
+		b.WriteString("    <metadata key=\"extruder\" value=\"1\"/>\n")
+		b.WriteString("    <part id=\"1\" subtype=\"normal_part\">\n")
+		fmt.Fprintf(&b, "      <metadata key=\"name\" value=\"%s\"/>\n", xmlAttr(label))
+		// Identity: the geometry is already written in plate coordinates, so a
+		// transform here would move it a second time.
+		b.WriteString("      <metadata key=\"matrix\" value=\"1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\"/>\n")
+		b.WriteString("    </part>\n  </object>\n")
+	}
+	b.WriteString("  <plate>\n")
+	b.WriteString("    <metadata key=\"plater_id\" value=\"1\"/>\n")
+	b.WriteString("    <metadata key=\"plater_name\" value=\"\"/>\n")
+	b.WriteString("    <metadata key=\"locked\" value=\"false\"/>\n")
+	for i, id := range ids {
+		b.WriteString("    <model_instance>\n")
+		fmt.Fprintf(&b, "      <metadata key=\"object_id\" value=\"%s\"/>\n", xmlAttr(id))
+		fmt.Fprintf(&b, "      <metadata key=\"instance_id\" value=\"%d\"/>\n", i)
+		b.WriteString("    </model_instance>\n")
+	}
+	b.WriteString("  </plate>\n</config>\n")
+	return b.String()
+}
+
+// xmlAttr escapes the few characters that would break an attribute. The ids
+// come from a file the user supplied, so they are not trusted to be clean.
+func xmlAttr(s string) string {
+	return strings.NewReplacer(`&`, "&amp;", `"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `'`, "&apos;").Replace(s)
 }
