@@ -10,7 +10,7 @@ combination of settings for each model and material is still needlessly hard.
 
 ## Downloads
 
-### Windows 11 x64 — 4.4.8 · current
+### Windows 11 x64 — 4.4.9 · current
 
 **Recommended — install with one command (no SmartScreen prompt):**
 
