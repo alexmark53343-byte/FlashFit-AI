@@ -103,9 +103,35 @@ func findExistingModel(entry advisorCatalogEntry) (string, bool) {
 		if statErr != nil || info.Size() != entry.Bytes {
 			continue
 		}
-		return filepath.Join(dir, file.Name()), true
+		path := filepath.Join(dir, file.Name())
+		// Size alone is weak identity for a multi-gigabyte file: a truncated
+		// download, an error page padded to length, or an unrelated file of the
+		// same size would all pass. A GGUF begins with a four-byte magic, so
+		// checking it is a cheap way to refuse something that is the right size
+		// but not a model.
+		if !looksLikeGGUF(path) {
+			continue
+		}
+		return path, true
 	}
 	return "", false
+}
+
+// looksLikeGGUF reports whether a file begins with the GGUF magic bytes. It is
+// not a full validation — only a full hash would be that — but it catches the
+// common corruption an interrupted or hijacked download produces: an HTML error
+// page, a truncated transfer, or a wholly unrelated file.
+func looksLikeGGUF(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 'G' && magic[1] == 'G' && magic[2] == 'U' && magic[3] == 'F'
 }
 
 // advisorModelPresent reports whether a catalogue entry can be loaded without
@@ -335,6 +361,13 @@ func fetchAdvisorModel(ctx context.Context, entry advisorCatalogEntry, target st
 			os.Remove(partial)
 			return fmt.Errorf("impronta del file scaricato non corrispondente")
 		}
+	} else if strings.HasSuffix(strings.ToLower(target), ".gguf") && !looksLikeGGUF(partial) {
+		// No published hash to check against, so the content is verified as far
+		// as it cheaply can be: a file that is the right size but does not even
+		// begin with the GGUF magic is a corrupt or hijacked transfer, and
+		// keeping it would hand the model server something it cannot load.
+		os.Remove(partial)
+		return fmt.Errorf("il file scaricato non è un modello GGUF valido")
 	}
 	return os.Rename(partial, target)
 }

@@ -731,10 +731,13 @@ func BuildAndOpenContext(parent context.Context, req ImportRequest) (ImportResul
 	// go-ahead: a defect it could not correct still stops the import, which is
 	// now the exception rather than the first answer.
 	verdict := SecureProfile(&rec, req.Model, req.Filament, printer)
-	LastSOGVerdict = verdict
+	// SecureProfile publishes the verdict for the interface itself; the caller
+	// only needs whether the print was cleared.
 	if !verdict.Cleared {
 		detail := ""
-		for _, issue := range LastPrintReadiness.Issues {
+		// verdict.Remaining is the same list SecureProfile published, held
+		// locally, so this reads it without touching the shared value.
+		for _, issue := range verdict.Remaining {
 			if issue.Severity >= 2 {
 				detail = issue.Detail
 				break

@@ -1347,7 +1347,7 @@ func updateRecommendation() {
 	// checks panel something to report before the user has committed to
 	// anything. Import recomputes from scratch and secures once, so nothing is
 	// corrected twice.
-	shared.LastSOGVerdict = shared.SecureProfile(&r, *app.analysis, f, printer)
+	shared.SecureProfile(&r, *app.analysis, f, printer)
 	app.recommendation = &r
 }
 

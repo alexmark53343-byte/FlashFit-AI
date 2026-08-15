@@ -79,7 +79,7 @@ func TestAdvisorCachesAnswer(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("il modello è stato interrogato %d volte invece di una: la cache non funziona", calls)
 	}
-	if outcome := LastAdvisorOutcome; !outcome.Used || outcome.Object != "staffa" {
+	if outcome := LastAdvisorOutcome(); !outcome.Used || outcome.Object != "staffa" {
 		t.Fatalf("l'oggetto riconosciuto non è arrivato alla UI: %+v", outcome)
 	}
 }

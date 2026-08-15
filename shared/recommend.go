@@ -364,17 +364,21 @@ func RecommendForPrinterWithTexture(a ModelAnalysis, f Filament, printer Printer
 //   - push shell or density outside the hand-checked envelope, or
 //   - cost more time than the quality tier is allowed to spend.
 func applyAdvisor(base qualityPreset, a ModelAnalysis, quality string, printer PrinterProfile) qualityPreset {
-	LastAdvisorOutcome = AdvisorOutcome{}
+	// Built locally and published once at the end, so a paint on another thread
+	// never reads it half-assembled.
+	var outcome AdvisorOutcome
+	defer func() { publishAdvisorOutcome(outcome) }()
 	// The model is consulted off the caller's thread. A cached answer is used
 	// straight away; a miss starts a request and falls through to the rules, so
 	// this function never waits on the network.
 	if deltas, ok := lookupOrRequestAdvice(advisorConfigFromEnv(), a, quality, base); ok {
-		LastAdvisorOutcome = AdvisorOutcome{
+		outcome = AdvisorOutcome{
 			Used:     true,
 			Object:   deltas.Object,
 			Reason:   deltas.Reason,
 			Mismatch: deltas.ShapeMismatch,
 			Finish:   deltas.Finish,
+			Risks:    deltas.Risks,
 		}
 		switch {
 		case !deltas.hasEffect():
@@ -384,16 +388,16 @@ func applyAdvisor(base qualityPreset, a ModelAnalysis, quality string, printer P
 			// nothing, so consulting the model and having it honestly decline
 			// would leave a worse profile than never consulting it. Abstention
 			// falls through to the rules instead.
-			LastAdvisorOutcome.Abstained = true
+			outcome.Abstained = true
 		default:
 			if proposal, scaled, accepted := admitAdvice(base, deltas, quality); accepted {
-				LastAdvisorOutcome.Accepted = true
-				LastAdvisorOutcome.Scaled = scaled
+				outcome.Accepted = true
+				outcome.Scaled = scaled
 				return proposal
 			}
 			// Unsafe advice gets no second chance at the profile: fall back to
 			// the rules, which face the same veto below.
-			LastAdvisorOutcome.Detail = advisorRejectionReason(base, applyAdvisorDeltas(base, deltas), quality)
+			outcome.Detail = advisorRejectionReason(base, applyAdvisorDeltas(base, deltas), quality)
 		}
 	}
 	proposal := base

@@ -37,7 +37,6 @@ type PrintReadiness struct {
 }
 
 // LastPrintReadiness is the most recent verdict, for the interface to show.
-var LastPrintReadiness PrintReadiness
 
 // CheckPrintReadiness walks the decided settings against the machine and the
 // material. Nothing here re-decides anything: it only reports.
@@ -157,6 +156,14 @@ func firstFloatFromAny(v any) float64 {
 		}
 		return f
 	case []any:
+		if len(value) > 0 {
+			return firstFloatFromAny(value[0])
+		}
+	case []string:
+		// Filament settings are per-extruder and sometimes arrive already
+		// wrapped. Reading the first entry rather than returning 0 means a
+		// wrapped temperature is still seen as the number it is, instead of
+		// silently reading as absent.
 		if len(value) > 0 {
 			return firstFloatFromAny(value[0])
 		}

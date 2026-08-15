@@ -183,7 +183,6 @@ type AdvisorOutcome struct {
 // LastAdvisorOutcome is written by the recommendation path and read by the UI.
 // A single value is enough: recommendations are computed one at a time on the
 // UI thread.
-var LastAdvisorOutcome AdvisorOutcome
 
 type advisorChatRequest struct {
 	Model       string               `json:"model"`
@@ -397,6 +396,13 @@ func proposeWithModelDetailed(cfg AdvisorConfig, a ModelAnalysis, quality string
 	// The model supplied the identification; the numbers come from the class.
 	deltas := deltasForClass(recognised.Class, a, AdvisorPriority)
 	deltas.Object, deltas.Class, deltas.Reason = recognised.Object, recognised.Class, recognised.Reason
+	// Finish and Risks are the model's other two recognitions, and they were
+	// being dropped here: deltasForClass does not set them and this only copied
+	// Object, Class and Reason across. So the surface sensitivity S.O.G uses for
+	// its margin, and the risks it has corrections for, never left this function
+	// — both features were inert in the real pipeline while passing tests that
+	// injected them directly. They travel with the rest of the recognition now.
+	deltas.Finish, deltas.Risks = recognised.Finish, recognised.Risks
 	deltas.ShapeMismatch = mismatch
 	deltas = clampAdvisorDeltas(deltas)
 	return applyAdvisorDeltas(base, deltas), deltas, true

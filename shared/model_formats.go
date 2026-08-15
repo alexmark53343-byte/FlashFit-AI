@@ -837,6 +837,16 @@ func writeGeometryOnly3MF(path string, tris []triangle) error {
 		return i
 	}
 	for _, t := range tris {
+		// A non-finite coordinate becomes "NaN" or "+Inf" in the file, which
+		// makes the whole 3MF unreadable — a corrupt output is worse than a
+		// refusal. Analysis already rejects such meshes, so reaching here means
+		// something downstream (a placement, a cut) produced one, and it must
+		// not be written. This is the last gate before the bytes.
+		for _, v := range []vec3{t.A, t.B, t.C} {
+			if !finiteVec(v) {
+				return errors.New("coordinate non finite: geometria non scrivibile in 3MF")
+			}
+		}
 		faces = append(faces, [3]int{add(t.A), add(t.B), add(t.C)})
 	}
 	f, err := os.Create(path)
@@ -916,4 +926,11 @@ func coord(v float64) string {
 		return "0"
 	}
 	return text
+}
+
+// finiteVec reports whether every component of a vertex is a real, finite
+// number — the only kind a 3MF coordinate is allowed to be.
+func finiteVec(v vec3) bool {
+	return !math.IsNaN(v.X) && !math.IsNaN(v.Y) && !math.IsNaN(v.Z) &&
+		!math.IsInf(v.X, 0) && !math.IsInf(v.Y, 0) && !math.IsInf(v.Z, 0)
 }

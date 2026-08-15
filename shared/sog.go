@@ -74,7 +74,6 @@ type SOGVerdict struct {
 }
 
 // LastSOGVerdict is the most recent verdict, for the interface to show.
-var LastSOGVerdict SOGVerdict
 
 // sogFinishLevels is the vocabulary for the model's second recognition: how
 // much the look of this part matters. Like the class, it is a question about
@@ -127,8 +126,11 @@ func SecureProfile(rec *Recommendation, a ModelAnalysis, f Filament, printer Pri
 		return verdict
 	}
 	// The model's recognition, if one arrived. It reached here through the
-	// guard, so the word is already known to be in the vocabulary.
-	if finish := LastAdvisorOutcome.Finish; finish != "" && finish != "unknown" {
+	// guard, so the word is already known to be in the vocabulary. Read once as
+	// a snapshot rather than field by field off a value another thread may be
+	// replacing.
+	advisor := LastAdvisorOutcome()
+	if finish := advisor.Finish; finish != "" && finish != "unknown" {
 		verdict.Finish, verdict.Source = finish, "modello"
 	}
 	margin := sogMargin(verdict.Finish)
@@ -138,7 +140,7 @@ func SecureProfile(rec *Recommendation, a ModelAnalysis, f Filament, printer Pri
 	// The risks the model named for this particular part, handled first so that
 	// whatever they change is then walked through the numeric checks below
 	// rather than applied after them and never looked at again.
-	verdict.Risks = LastAdvisorOutcome.Risks
+	verdict.Risks = advisor.Risks
 	verdict.Repairs = append(verdict.Repairs, applyNamedRisks(rec, verdict.Risks, margin)...)
 
 	const maxPasses = 8
@@ -171,7 +173,7 @@ func SecureProfile(rec *Recommendation, a ModelAnalysis, f Filament, printer Pri
 	// A final check on the profile as it now stands. Clearing on the strength
 	// of a check that ran before the last edit would defeat the point.
 	final := CheckPrintReadiness(*rec, a, f, printer)
-	LastPrintReadiness = final
+	publishPrintReadiness(final)
 	verdict.Remaining = final.Issues
 	verdict.Cleared = !final.Blocked
 
@@ -184,6 +186,10 @@ func SecureProfile(rec *Recommendation, a ModelAnalysis, f Filament, printer Pri
 		rec.EstimatedModeMinutes *= verdict.SpeedFactor
 		rec.EstimatedRelativeTime *= verdict.SpeedFactor
 	}
+	// Published here, in step with the readiness above, so the interface reads
+	// one consistent verdict rather than two globals set at different moments by
+	// different threads.
+	publishSOGVerdict(verdict)
 	return verdict
 }
 
@@ -253,7 +259,21 @@ func repairIssue(rec *Recommendation, issue PrintIssue, margin float64) (SOGRepa
 		if current <= issue.Limit {
 			return SOGRepair{}, false
 		}
-		rec.Filament["nozzle_temperature"] = []string{strconv.FormatFloat(issue.Limit, 'f', 0, 64)}
+		// Stored as a plain string, the same shape recommend.go writes it in.
+		// It was briefly written as a []string here, and the two disagreed: the
+		// project writer wraps a filament value in a []string itself, so a value
+		// already wrapped came out doubly nested — "[200]" — a temperature no
+		// slicer can read. The re-check in the loop above could not read it
+		// either, so S.O.G thought it had fixed a temperature it had in fact
+		// turned to garbage.
+		limitText := strconv.FormatFloat(issue.Limit, 'f', 0, 64)
+		rec.Filament["nozzle_temperature"] = limitText
+		syncCriticalValue(rec, "nozzle_temperature", issue.Limit)
+		// The initial-layer temperature must not end up hotter than the layers
+		// above it, which it would if only the main temperature came down.
+		if initial := firstFloatFromAny(rec.Filament["nozzle_temperature_initial_layer"]); initial > issue.Limit {
+			rec.Filament["nozzle_temperature_initial_layer"] = limitText
+		}
 		return SOGRepair{Issue: issue.Key, Setting: "nozzle_temperature", From: current, To: issue.Limit}, true
 	}
 	return SOGRepair{}, false

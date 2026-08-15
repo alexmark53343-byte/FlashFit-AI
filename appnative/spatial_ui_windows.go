@@ -1076,7 +1076,7 @@ func sogCheck() modelCheck {
 	if app.recommendation == nil {
 		return modelCheck{label: tr("checkSOG"), detail: tr("checkSOGWaiting"), level: 0}
 	}
-	verdict := shared.LastSOGVerdict
+	verdict := shared.LastSOGVerdict()
 	switch {
 	case !verdict.Cleared:
 		return modelCheck{label: tr("checkSOG"), detail: tr("checkSOGHeld"), level: 2}
@@ -1087,7 +1087,7 @@ func sogCheck() modelCheck {
 }
 
 func printReadinessChecks() []modelCheck {
-	readiness := shared.LastPrintReadiness
+	readiness := shared.LastPrintReadiness()
 	if app.recommendation == nil {
 		return nil
 	}
@@ -1127,7 +1127,7 @@ func advisorCheck() (modelCheck, bool) {
 		}
 		return modelCheck{}, false
 	}
-	outcome := shared.LastAdvisorOutcome
+	outcome := shared.LastAdvisorOutcome()
 	if !outcome.Used {
 		return modelCheck{label: tr("checkAI"), detail: tr("checkAIReady"), level: 0}, true
 	}
@@ -1166,7 +1166,7 @@ func protectionCheck() modelCheck {
 // S.O.G row it is always present, because a layer that only appears when it
 // objects cannot be told apart from one that is not running.
 func guardrailCheck() modelCheck {
-	outcome := shared.LastAdvisorOutcome
+	outcome := shared.LastAdvisorOutcome()
 	row := func(key string, level int) modelCheck {
 		return modelCheck{label: tr("checkGuard"), detail: tr(key), level: level}
 	}
@@ -1582,7 +1582,7 @@ func sogState() (string, bool) {
 	if app.analysis != nil && app.recommendation == nil {
 		return tr("promoSOGIdle"), false
 	}
-	if app.recommendation != nil && !shared.LastSOGVerdict.Cleared {
+	if app.recommendation != nil && !shared.LastSOGVerdict().Cleared {
 		return tr("promoSOGHeld"), false
 	}
 	return tr("promoSOGOn"), true

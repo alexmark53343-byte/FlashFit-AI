@@ -43,7 +43,7 @@ func TestSOGOnlyEverSlowsDown(t *testing.T) {
 		}
 		nozzleBefore := firstFloatFromAny(rec.Filament["nozzle_temperature"])
 
-		LastAdvisorOutcome = AdvisorOutcome{Used: true, Finish: finish}
+		publishAdvisorOutcome(AdvisorOutcome{Used: true, Finish: finish})
 		SecureProfile(&rec, a, f, printer)
 
 		for _, key := range watched {
@@ -55,7 +55,7 @@ func TestSOGOnlyEverSlowsDown(t *testing.T) {
 			t.Fatalf("finitura %q: temperatura ugello salita da %.0f a %.0f", finish, nozzleBefore, after)
 		}
 	}
-	LastAdvisorOutcome = AdvisorOutcome{}
+	publishAdvisorOutcome(AdvisorOutcome{})
 }
 
 // The model's influence is bounded in one direction. Whatever it answers, the
@@ -182,7 +182,7 @@ func TestNamedRisksOnlyEverTightenTheProfile(t *testing.T) {
 			before[key] = processFloat(&rec, key)
 		}
 
-		LastAdvisorOutcome = AdvisorOutcome{Used: true, Risks: []string{risk}}
+		publishAdvisorOutcome(AdvisorOutcome{Used: true, Risks: []string{risk}})
 		verdict := SecureProfile(&rec, a, f, printer)
 
 		for _, key := range watched {
@@ -194,7 +194,7 @@ func TestNamedRisksOnlyEverTightenTheProfile(t *testing.T) {
 			t.Fatalf("rischio %q non riportato nel verdetto: %v", risk, verdict.Risks)
 		}
 	}
-	LastAdvisorOutcome = AdvisorOutcome{}
+	publishAdvisorOutcome(AdvisorOutcome{})
 }
 
 // Each named risk has to actually do something, or naming it is theatre.
