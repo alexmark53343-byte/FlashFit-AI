@@ -193,19 +193,26 @@ func ResolvePrinterProfile(path string) (PrinterProfile, error) {
 // wider than the plate while each piece fits comfortably; those go on separate
 // plates rather than being refused.
 func ValidateModelForPrinter(a ModelAnalysis, p PrinterProfile) error {
-	// The usable plate, not the raw build volume. A bed loses a strip to clips,
-	// the prime line and the edge the nozzle cannot reach squarely, so a part
-	// exactly as wide as the advertised bed does not print — and passing it here
-	// only moves the failure to where it costs a plate.
-	usable := ManualFor(p).UsablePlate
+	// Judged against the machine's actual build volume, not against the margin
+	// FlashFit keeps for placing things.
+	//
+	// It was briefly the other way round, and that was a mistake worth naming:
+	// the usable plate takes a few millimetres off each axis so a part can be
+	// centred clear of the clips and the prime line, which is the right basis
+	// for *arranging* something and the wrong basis for refusing it. A 214 mm
+	// part on a 220 mm bed was rejected outright — a part the slicer would have
+	// taken without comment. Refusing what the machine can do is a worse failure
+	// than accepting something that ends up tight, because the user has no way
+	// to overrule it.
+	volume := p.BuildVolume
 	measured := printableExtents(a)
 	for i, axis := range []string{"X", "Y", "Z"} {
-		if measured[i] > usable[i]+0.01 {
+		if measured[i] > volume[i]+0.01 {
 			if a.PieceCount > 1 {
-				return fmt.Errorf("pezzo singolo fuori volume %s: asse %s %.1f mm supera %.1f mm utilizzabili (il file contiene %d pezzi)",
-					p.Model, axis, measured[i], usable[i], a.PieceCount)
+				return fmt.Errorf("pezzo singolo fuori volume %s: asse %s %.1f mm supera %.1f mm (il file contiene %d pezzi)",
+					p.Model, axis, measured[i], volume[i], a.PieceCount)
 			}
-			return fmt.Errorf("modello fuori volume %s: asse %s %.1f mm supera %.1f mm utilizzabili", p.Model, axis, measured[i], usable[i])
+			return fmt.Errorf("modello fuori volume %s: asse %s %.1f mm supera %.1f mm", p.Model, axis, measured[i], volume[i])
 		}
 	}
 	return nil
